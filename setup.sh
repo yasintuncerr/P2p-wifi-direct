@@ -100,7 +100,7 @@ check_p2p_support() {
         [[ "$answer" != "y" ]] && die "Aborting setup."
     fi
 
-    if iw phy 2>/dev/null | grep -q "P2P-GO"; then
+    if iw phy 2>/dev/null | grep -q "P2P-GO"; then
         log "P2P-Go support detected."
     else
         warn "P2P-Go support not detected. This device may not work as a host."
@@ -155,7 +155,7 @@ interactive_setup() {
     echo "  [6] rpi5   → Raspberry Pi 5    (CYW43455 / 5GHz ✅)"
     echo ""
     while true; do
-        read -rp " Choose device (1-6): " device_choice
+        read -rp "  Choose device (1-6): " device_choice
         case "$device_choice" in
             1) DEVICE="nxp"; break ;;
             2) DEVICE="jetson"; break ;;
@@ -266,17 +266,17 @@ determine_frequency() {
                 P2P_FREQ="$P2P_FREQ_24"
                 P2P_REG_CLASS="$P2P_REG_CLASS_24"
             else 
-                P2P_CHANNEL="$P2P_CHANNEL_5"
-                P2P_FREQ="$P2P_FREQ_5"
-                P2P_REG_CLASS="$P2P_REG_CLASS_5"
+                P2P_CHANNEL="$P2P_CHANNEL"
+                P2P_FREQ="$P2P_FREQ"
+                P2P_REG_CLASS="$P2P_REG_CLASS"
             fi
             ;;
         custom)
             echo "  [1] 5GHz - Channel 44 (5220 MHz) - Suggested"
             echo "  [2] 5GHz - Channel 36 (5180 MHz)"
             echo "  [3] 5GHz - Channel 149 (5745 MHz)"
-            echo "  [4] 2.4GHz - Channel 6 (2437"
-            read -rp "  Choose frequency (1-4):  f_choice"
+            echo "  [4] 2.4GHz - Channel 6 (2437 MHz)"
+            read -rp "  Choose frequency (1-4):"  f_choice
             case "$f_choice" in
                 1) P2P_CHANNEL=44; P2P_FREQ=5220; P2P_REG_CLASS=115 ;;
                 2) P2P_CHANNEL=36; P2P_FREQ=5180; P2P_REG_CLASS=115 ;;
@@ -287,7 +287,7 @@ determine_frequency() {
             ;;
         *)
             if [ "$SUPPORTS_5GHZ" = "true" ]; then
-                log "5GHz using: Ch:$P2P_CHANNEL} ($P2P_FREQ MHz)"
+                log "5GHz using: Ch:$P2P_CHANNEL ($P2P_FREQ MHz)"
             else
                 P2P_CHANNEL="$P2P_CHANNEL_24"
                 P2P_FREQ="$P2P_FREQ_24"
@@ -449,15 +449,15 @@ main() {
     else
         # Non-interaktif: comes from args, decide scenario automatically
         case "${ROLE}-${DEVICE}" in
-            host-nxp|client-jetson)  SCENARIO="nxp_jetson" ;;
-            host-nxp|client-rpi)     SCENARIO="nxp_rpi" ;;
-            host-nxp|client-nxp)     SCENARIO="nxp_nxp" ;;
-            host-jetson|client-nxp) SCENARIO="jetson_nxp" ;;
-            host-jetson|client-jetson) SCENARIO="jetson_jetson" ;;
-            host-jetson|client-rpi)     SCENARIO="jetson_rpi" ;;
-            host-rpi|client-nxp)     SCENARIO="rpi_nxp" ;;
-            host-rpi|client-jetson) SCENARIO="rpi_jetson" ;;
-            host-rpi|client-rpi)    SCENARIO="rpi_rpi" ;;
+            host-nxp|client-jetson)  SCENARIO="nxp-jetson" ;;
+            host-nxp|client-rpi)     SCENARIO="nxp-rpi" ;;
+            host-nxp|client-nxp)     SCENARIO="nxp-nxp" ;;
+            host-jetson|client-nxp) SCENARIO="jetson-nxp" ;;
+            host-jetson|client-jetson) SCENARIO="jetson-jetson" ;;
+            host-jetson|client-rpi)     SCENARIO="jetson-rpi" ;;
+            host-rpi|client-nxp)     SCENARIO="rpi-nxp" ;;
+            host-rpi|client-jetson) SCENARIO="rpi-jetson" ;;
+            host-rpi|client-rpi)    SCENARIO="rpi-rpi" ;;
             *) SCENARIO="custom" ;;
         esac
         info "Argüman modu: rol=$ROLE, cihaz=$DEVICE"
