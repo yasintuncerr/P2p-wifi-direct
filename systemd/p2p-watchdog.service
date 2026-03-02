@@ -1,0 +1,20 @@
+[Unit]
+Description=P2P Wi-Fi Direct - Connection Watchdog
+After=p2p-init.service
+Requires=p2p-init.service
+#If p2p-init dies, watchdog will stop too, and there will be no more zombies.
+BindsTo=p2p-init.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/video-node
+ExecStart=/usr/local/bin/p2p-watchdog.sh
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=p2p-watchdog
+
+[Install]
+WantedBy=multi-user.target
