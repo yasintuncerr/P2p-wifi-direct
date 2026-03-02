@@ -3,12 +3,12 @@
 # P2P Wi-Fi Direct Setup
 # Supported Devices: NXP i.MX8M | Jetson Nano | RPi (Zero 2W, 2/3/4/5)
 #
-# Kullanım:
-#   ./setup.sh                    → interaktif mod
+# Usage:
+#   ./setup.sh                    → interactive mode
 #   ./setup.sh --role host --device nxp
 #   ./setup.sh --role client --device rpi
 #   ./setup.sh --role client --device jetson
-#   ./setup.sh --uninstall        → uninstall mod
+#   ./setup.sh --uninstall        → uninstall mode
 # ═══════════════════════════════════════════════════════════
 set -euo pipefail
 
