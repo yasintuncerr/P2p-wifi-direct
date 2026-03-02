@@ -35,6 +35,8 @@ die()     { error "$1"; exit 1; }
 ROLE=""
 DEVICE=""
 UNINSTALL=false
+ARG_SSID=""
+ARG_PSK=""
 
 # ── Argument Parsing ──────────────────────────────────────────────
 parse_args() {
@@ -42,6 +44,8 @@ parse_args() {
         case "$1" in
             --role) ROLE="$2"; shift 2 ;;
             --device) DEVICE="$2"; shift 2 ;;
+            --ssid) ARG_SSID="$2"; shift 2 ;;
+            --psk) ARG_PSK="$2"; shift 2 ;;
             --uninstall) UNINSTALL=true; shift ;;
             -h| --help) show_help; exit 0 ;;
             *) die "Unknown argument: $1" ;;
@@ -53,12 +57,13 @@ show_help() {
     echo -e "${BOLD}Usage:${NC}"
     echo "  $0                    → interactive mode"
     echo "  $0 --role host --device nxp"
+    echo "  $0 --role host --device rpi3bp --ssid MyNetwork --psk MyPassword"
     echo "  $0 --role client --device rpi"
     echo "  $0 --role client --device jetson"
     echo "  $0 --uninstall        → uninstall mode"
     echo ""
     echo "Roles: host | client"
-    echo "Devices: nxp | jetson | rpi"
+    echo "Devices: nxp | jetson | rpi | rpi3bp | rpi4 | rpi5"
 }
 
 # ── Root Check ──────────────────────────────────────────────
@@ -147,7 +152,7 @@ interactive_setup() {
 
 
     # Device selection
-    header "2. Cihaz Seçimi"
+    header "2. Device Selection"
     echo "  [1] nxp    → NXP i.MX8M (AzureWave 88W8997 / mlan0)"
     echo "  [2] jetson → Jetson Nano"
     echo "  [3] rpi    → Raspberry Pi Zero / Zero 2W  (Only 2.4GHz!)"
@@ -267,9 +272,7 @@ determine_frequency() {
                 P2P_FREQ="$P2P_FREQ_24"
                 P2P_REG_CLASS="$P2P_REG_CLASS_24"
             else 
-                P2P_CHANNEL="$P2P_CHANNEL"
-                P2P_FREQ="$P2P_FREQ"
-                P2P_REG_CLASS="$P2P_REG_CLASS"
+                log "5GHz using: Ch:$P2P_CHANNEL ($P2P_FREQ MHz)"
             fi
             ;;
         custom)
@@ -440,10 +443,15 @@ main() {
         uninstall
     fi
 
-    # SSID/PSK default values (non-interaktif modda)
-    P2P_SSID="${P2P_SSID:-DIRECT-NXPStream}"
-    P2P_PSK="${P2P_PSK:-Str0ngP@ssw0rd!}"
     SCENARIO="${SCENARIO:-default}"
+    if [ -f "$INSTALL_ENV_FILE" ]; then
+        info "Old P2P configuration found. Previous network information is preserved..."
+        local prev_ssid=$(grep "^P2P_SSID=" "$INSTALL_ENV_FILE" | cut -d'"' -f2 || true)
+        local prev_psk=$(grep "^P2P_PSK=" "$INSTALL_ENV_FILE" | cut -d'"' -f2 || true)
+        
+        [ -z "$ARG_SSID" ] && [ -n "$prev_ssid" ] && ARG_SSID="$prev_ssid"
+        [ -z "$ARG_PSK" ] && [ -n "$prev_psk" ] && ARG_PSK="$prev_psk"
+    fi
 
     # If any missing arguments, fallback to interactive setup 
     if [ -z "$ROLE" ] || [ -z "$DEVICE" ]; then
@@ -451,18 +459,24 @@ main() {
     else
         # Non-interaktif: comes from args, decide scenario automatically
         case "${ROLE}-${DEVICE}" in
-            host-nxp|client-jetson)  SCENARIO="nxp-jetson" ;;
-            host-nxp|client-rpi)     SCENARIO="nxp-rpi" ;;
-            host-nxp|client-nxp)     SCENARIO="nxp-nxp" ;;
-            host-jetson|client-nxp) SCENARIO="jetson-nxp" ;;
-            host-jetson|client-jetson) SCENARIO="jetson-jetson" ;;
-            host-jetson|client-rpi)     SCENARIO="jetson-rpi" ;;
-            host-rpi|client-nxp)     SCENARIO="rpi-nxp" ;;
-            host-rpi|client-jetson) SCENARIO="rpi-jetson" ;;
-            host-rpi|client-rpi)    SCENARIO="rpi-rpi" ;;
+            host-nxp)      SCENARIO="nxp-nxp"       ;;
+            host-jetson)   SCENARIO="jetson-jetson" ;;
+            host-rpi)      SCENARIO="rpi-rpi"       ;;
+            host-rpi3bp)   SCENARIO="rpi-rpi"       ;;
+            host-rpi4)     SCENARIO="rpi-rpi"       ;;
+            host-rpi5)     SCENARIO="rpi-rpi"       ;;
+            client-nxp)    SCENARIO="nxp-nxp"       ;;
+            client-jetson) SCENARIO="jetson-jetson" ;;
+            client-rpi)    SCENARIO="rpi-rpi"       ;;
+            client-rpi3bp) SCENARIO="rpi-rpi"       ;;
+            client-rpi4)   SCENARIO="rpi-rpi"       ;;
+            client-rpi5)   SCENARIO="rpi-rpi"       ;;
             *) SCENARIO="custom" ;;
         esac
-        info "Argüman modu: rol=$ROLE, cihaz=$DEVICE"
+        
+        P2P_SSID="${ARG_SSID:-DIRECT-NXPStream}"
+        P2P_PSK="${ARG_PSK:-Str0ngP@ssw0rd!}"
+        info "Argument mode: role=$ROLE, device=$DEVICE (SSID: $P2P_SSID)"
     fi
 
     check_deps
