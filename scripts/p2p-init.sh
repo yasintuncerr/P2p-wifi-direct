@@ -52,6 +52,10 @@ start_wpa() {
         sleep 1
     fi
 
+    # Clean up stale control sockets that prevent new instances from starting
+    rm -f "/var/run/wpa_supplicant/$P2P_IFACE" 2>/dev/null || true
+
+
     # reset interface
     ip link set "$P2P_IFACE" down 2>/dev/null || true
     sleep 0.5
