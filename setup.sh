@@ -63,7 +63,9 @@ show_help() {
 
 # ── Root Check ──────────────────────────────────────────────
 check_root() {
-    [[ $EUID -ne 0 ]] && die "Root privileges are required. Please run with 'sudo ./setup.sh'"
+    if [[ $EUID -ne 0 ]]; then
+        die "Root privileges are required. Please run with 'sudo ./setup.sh'"
+    fi
 }
 
 # ── Dependency Check ──────────────────────────────────────────────
@@ -81,14 +83,13 @@ check_deps() {
     done
 
     if [ ${#missing[@]} -gt 0 ]; then
-        warn "Missing Depndencies installing..."
-        apt-get update -qq
+        warn "Missing Dependencies installing..."
+        apt-get update -qq || true
         apt-get install -y wpasupplicant iw iputils-ping 2>/dev/null || \
         yum install -y wpa_supplicant iw iputils-ping 2>/dev/null || \
         die "Failed to install dependencies. Please install manually: ${missing[*]}"
     fi
 }
-
 # ── P2P support check ──────────────────────────────────────────────
 check_p2p_support() {
     local iface="$1"
