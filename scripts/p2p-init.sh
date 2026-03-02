@@ -3,7 +3,7 @@
 # ───────────────────────────────────────────────────────────────────
 # P2P Wi-Fi Direct - Initializing Connection
 # Role and parameters reads from /etc/default/video-node
-# If U-Boor env are available, use them to override the parameters
+# If U-Boot env are available, use them to override the parameters
 # ───────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -194,7 +194,14 @@ start_client() {
 
 # ── Main Execution  ───────────────────────────────────────────────
 rm -f "$STATE_FILE"
+
+# Default to DEVICE_ROLE from config file, let uboot_override override NODE_ROLE if needed
+NODE_ROLE="${DEVICE_ROLE:-}"
 uboot_override
+
+if [ -z "$NODE_ROLE" ]; then
+    die "NODE_ROLE/DEVICE_ROLE is empty."
+fi
 
 case "$NODE_ROLE" in
     host)   start_host ;;
