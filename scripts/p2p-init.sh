@@ -27,18 +27,18 @@ uboot_override() {
 
     log "U-Boot env checking..."
 
-    local _role _iface _channel _freq req_class
+    local _role _iface _channel _freq _req_class
     _role=$(fw_printenv -n node_role 2>/dev/null || true)
     _iface=$(fw_printenv -n p2p_iface 2>/dev/null || true)
     _channel=$(fw_printenv -n p2p_channel 2>/dev/null || true)
     _freq=$(fw_printenv -n p2p_freq 2>/dev/null || true)
-    req_class=$(fw_printenv -n p2p_req_class 2>/dev/null || true)
+    _req_class=$(fw_printenv -n p2p_req_class 2>/dev/null || true)
 
     [ -n "$_role" ]     && { NODE_ROLE="$_role";            log "U-Boot -> NODE_ROLE=$NODE_ROLE"; }
     [ -n "$_iface" ]    && { P2P_IFACE="$_iface";           log "U-Boot -> P2P_IFACE=$P2P_IFACE"; }
     [ -n "$_channel" ]  && { P2P_CHANNEL="$_channel";       log "U-Boot -> P2P_CHANNEL=$P2P_CHANNEL"; }
     [ -n "$_freq" ]     && { P2P_FREQ="$_freq";             log "U-Boot -> P2P_FREQ=$P2P_FREQ"; }
-    [ -n "$req_class" ] && { P2P_REQ_CLASS="$_req_class";   log "U-Boot -> P2P_REQ_CLASS=$P2P_REQ_CLASS"; }
+    [ -n "$_req_class" ] && { P2P_REQ_CLASS="$_req_class";   log "U-Boot -> P2P_REQ_CLASS=$P2P_REQ_CLASS"; }
 }
 
 # ── start wpa_supplicant  ──────────────────────────────────────────────
@@ -59,7 +59,7 @@ start_wpa() {
 
     log "Starting wpa_supplicant..."
     wpa_supplicant -B \
-        -i "P2P_IFACE" \
+        -i "$P2P_IFACE" \
         -c "$conf" \
         -D nl80211 \
         -f "$WPA_LOG" \
@@ -87,7 +87,7 @@ assign_ip() {
 # ── Wait until connected  ───────────────────────────────────────────────
 wait_connected() {
     local timeout=25 elapsed=0
-    log "WPA state=COMPLETED waiting (max $(timeout)s)..."
+    log "WPA state=COMPLETED waiting (max ${timeout}s)..."
     while [ $elapsed -lt $timeout ]; do
         local state
         state=$(wpa_cli -i "$P2P_IFACE" status 2>/dev/null \
