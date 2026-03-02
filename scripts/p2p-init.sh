@@ -161,29 +161,37 @@ start_client() {
         wpa_cli -i "$P2P_IFACE" p2p_find type=progressive
 
         # Look P2P peer list until the host is found
-        local go_mac="" elapsed=0 timeout=15
+        local go_mac="" elapsed=0 timeout=20
         while [ -z "$go_mac" ] && [ $elapsed -lt $timeout ]; do
-            sleep 1; elapsed=$((elapsed+1))
-            go_mac=$(wpa_cli -i "$P2P_IFACE" p2p_peers 2>/dev/null \
-                | while read -r mac; do
-                    is_go=$(wpa_cli -i "$P2P_IFACE" p2p_peer "$mac" 2>/dev/null \
-                        | grep "is_go=" | cut -d= -f2)
-                    [ "$is_go" = "1" ] && echo "$mac" && break
-                done || true)
+            sleep 2; elapsed=$((elapsed+2))
+            
+            # Get list of all peers currently visible
+            local peers
+            peers=$(wpa_cli -i "$P2P_IFACE" p2p_peers 2>/dev/null || echo "")
+            
+            for mac in $peers; do
+                local is_go
+                is_go=$(wpa_cli -i "$P2P_IFACE" p2p_peer "$mac" 2>/dev/null | grep -i "is_go=1" || true)
+                if [ -n "$is_go" ]; then
+                    go_mac="$mac"
+                    break
+                fi
+            done
         done
 
         if [ -n "$go_mac" ]; then
             ok "Host found: $go_mac"
             wpa_cli -i "$P2P_IFACE" p2p_stop_find
-            wpa_cli -i "$P2P_IFACE" p2p_connect "$go_mac" pbc persistent go_intent=0
+            wpa_cli -i "$P2P_IFACE" p2p_connect "$go_mac" pbc persistent="$net_id" join
         else
-            log "Host peer not found. Trying to connect with PBC broadcast..."
+            log "Host peer not found in scan. Trying to connect with PBC broadcast..."
             wpa_cli -i "$P2P_IFACE" p2p_stop_find
-            wpa_cli -i "$P2P_IFACE" p2p_connect any pbc persistent go_intent=0
+            wpa_cli -i "$P2P_IFACE" p2p_connect any pbc persistent="$net_id" join
         fi
     else
         log "First setup -> Host Waiting for connection, Connecting with PBC broadcast..."
-        wpa_cli -i "$P2P_IFACE" p2p_find type=progressive
+        wpa_cli -i "$P2P_IFACE" p2p_find 10
+        sleep 2
         wpa_cli -i "$P2P_IFACE" p2p_connect any pbc persistent go_intent=0
     fi
 
