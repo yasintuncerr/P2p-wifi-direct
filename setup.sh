@@ -326,16 +326,7 @@ install_files() {
     # ── wpa_supplicant confs ─────────────────────────────
     mkdir -p "$INSTALL_CONF_DIR"
 
-    local apply_conf() { # inline func
-        local src="$1" dst="$2"
-        sed \
-            -e "s/__CHANNEL__/$P2P_CHANNEL/g" \
-            -e "s/__REG_CLASS__/$P2P_REG_CLASS/g" \
-            -e "s/__FREQ__/$P2P_FREQ/g" \
-            -e "s/__SSID__/${P2P_SSID:-DIRECT-NXPStream}/g" \
-            -e "s/__PSK__/${P2P_PSK:-Str0ngP@ssw0rd!}/g" \
-            "$src" > "$dst"
-    }
+
 
     apply_conf "$REPO_DIR/config/p2p-host.conf"   "$INSTALL_CONF_DIR/p2p-host.conf"
     apply_conf "$REPO_DIR/config/p2p-client.conf" "$INSTALL_CONF_DIR/p2p-client.conf"
