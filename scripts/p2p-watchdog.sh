@@ -24,7 +24,7 @@ log "Target: $PING_TARGET | Interface: $P2P_IFACE"
 log "Check: every $WATCHDOG_INTERVAL seconds | fail threshold: $WATCHDOG_FAIL_THRESHOLD"
 
 while true; do
-    dleep "$WATCHDOG_INTERVAL"
+    sleep "$WATCHDOG_INTERVAL"
 
     #wait until state file exists
     if [ ! -f "$STATE_FILE" ]; then
