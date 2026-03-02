@@ -259,7 +259,7 @@ determine_frequency() {
     header "Determining Frequency Band"
 
     case "$SCENARIO" in
-        nxp_rpi | jetson_rpi | rpi_nxp | rpi_jetson | rpi_rpi)
+        nxp-rpi | jetson-rpi | rpi-nxp | rpi-jetson | rpi-rpi)
             #Rpi Zero 2W only supports 2.4GHz, so if it's in the scenario, we must use 2.4GHz
             if [[ "$DEVICE_TYPE" == "rpi" ]]; then
                 P2P_CHANNEL="$P2P_CHANNEL_24"
@@ -431,6 +431,7 @@ print_summary() {
 # Main
 # ═══════════════════════════════════════════════════════════
 main() {
+    local SCENARIO=""
     parse_args "$@"
     check_root
 
