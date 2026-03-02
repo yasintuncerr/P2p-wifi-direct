@@ -394,6 +394,7 @@ uninstall() {
     rm -f "$INSTALL_CONF_DIR/p2p-client.conf"
     rm -f "$INSTALL_ENV_FILE"
     rm -f "/run/p2p-connected"
+    rm -f "/var/log/wpa_supplicant.log"
 
     systemctl daemon-reload
     log "All P2P components removed."
