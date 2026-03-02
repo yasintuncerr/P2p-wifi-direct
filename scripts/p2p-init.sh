@@ -16,7 +16,7 @@ WPA_CONF_DIR="/etc/wpa_supplicant"
 STATE_FILE="/run/p2p-connected"
 WPA_LOG="/var/log/wpa_supplicant.log"
 
-log() {logger -t "$TAG" "$1"; echo "[$(date '+%H:%M:%S')] [$TAG] $1"; }
+log() { logger -t "$TAG" "$1"; echo "[$(date '+%H:%M:%S')] [$TAG] $1"; }
 die() { log "ERROR: $1"; exit 1; }
 ok()  { log "OK: $1"; }
 
@@ -153,7 +153,7 @@ start_client() {
     net_id=$(get_net_id)
 
     if [ -n "$net_id" ]; then
-        lof "Persistent group found (id=$net_id) -> Looking for host..."
+        log "Persistent group found (id=$net_id) -> Looking for host..."
         wpa_cli -i "$P2P_IFACE" p2p_find type=progressive
 
         # Look P2P peer list until the host is found
