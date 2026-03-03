@@ -5,7 +5,6 @@
 # Physical interface only — no virtual interfaces, no P2P overhead.
 # Power management is handled by p2p-power.service, not here.
 # ───────────────────────────────────────────────────────────────────
-
 set -euo pipefail
 
 source /etc/default/video-node
@@ -37,7 +36,6 @@ uboot_override() {
     [ -n "$_reg_class" ] && { P2P_REG_CLASS="$_reg_class"; log "U-Boot -> P2P_REG_CLASS=$P2P_REG_CLASS"; }
 }
 
-
 # ── Stop any existing wpa_supplicant ──────────────────────────────
 stop_wpa() {
     if pgrep -x wpa_supplicant > /dev/null; then
@@ -54,7 +52,6 @@ reset_iface() {
     sleep 0.3
     ip link set "$P2P_IFACE" up || die "Cannot bring up $P2P_IFACE — check 'iw dev'"
 }
-
 
 # ── Start wpa_supplicant ──────────────────────────────────────────
 start_wpa() {
@@ -75,15 +72,17 @@ start_wpa() {
     ok "wpa_supplicant running."
 }
 
-
 # ── Assign static IP ──────────────────────────────────────────────
 assign_ip() {
     local ip="$1"
-    log "Assigning $ip/24 → $P2P_IFACE"
+    # Derive broadcast: 192.168.77.x → 192.168.77.255
+    local broadcast
+    broadcast=$(echo "$ip" | awk -F. '{print $1"."$2"."$3".255"}')
+    log "Assigning $ip/24 brd $broadcast → $P2P_IFACE"
     ip addr flush dev "$P2P_IFACE" 2>/dev/null || true
-    ip addr add "$ip/24" dev "$P2P_IFACE"
+    ip addr add "$ip/24" broadcast "$broadcast" dev "$P2P_IFACE"
     ip link set "$P2P_IFACE" up
-    ok "$P2P_IFACE → $ip/24"
+    ok "$P2P_IFACE → $ip/24 (brd $broadcast)"
 }
 
 # ── Wait for STA association (client) ─────────────────────────────
@@ -101,7 +100,6 @@ wait_connected() {
     return 1
 }
 
-
 # ── HOST ──────────────────────────────────────────────────────────
 start_host() {
     log "======================================"
@@ -114,13 +112,19 @@ start_host() {
     reset_iface
     start_wpa "$WPA_CONF_DIR/p2p-host.conf"
 
-    sleep 1
+    # Wait until AP is actually running (RUNNING flag appears)
+    log "Waiting for AP to become active..."
+    local timeout=10 elapsed=0
+    until ip link show "$P2P_IFACE" | grep -q "RUNNING"; do
+        sleep 1; elapsed=$((elapsed+1))
+        [ $elapsed -ge $timeout ] && { warn "AP RUNNING flag not set — continuing anyway."; break; }
+    done
+
     assign_ip "$HOST_IP"
 
     touch "$STATE_FILE"
     ok "Host AP ready — waiting for clients."
 }
-
 
 # ── CLIENT ────────────────────────────────────────────────────────
 start_client() {
