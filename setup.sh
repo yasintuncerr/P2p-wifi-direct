@@ -339,14 +339,14 @@ install_files() {
     apply_conf "$REPO_DIR/config/p2p-client.conf" "$INSTALL_CONF_DIR/p2p-client.conf"
     log "wpa_supplicant: $INSTALL_CONF_DIR/p2p-{host,client}.conf"
 
-    # Scripts
-    cp "$REPO_DIR/scripts/p2p-init.sh"     "$INSTALL_BIN_DIR/"
-    cp "$REPO_DIR/scripts/p2p-watchdog.sh" "$INSTALL_BIN_DIR/"
-    cp "$REPO_DIR/scripts/p2p-power.sh"    "$INSTALL_BIN_DIR/"
-    chmod +x "$INSTALL_BIN_DIR/p2p-init.sh"
-    chmod +x "$INSTALL_BIN_DIR/p2p-watchdog.sh"
-    chmod +x "$INSTALL_BIN_DIR/p2p-power.sh"
-    log "Scripts: $INSTALL_BIN_DIR/p2p-{init,watchdog,power}.sh"
+    # Scripts — install without .sh so they're callable as commands
+    cp "$REPO_DIR/scripts/p2p-init.sh"     "$INSTALL_BIN_DIR/p2p-init"
+    cp "$REPO_DIR/scripts/p2p-watchdog.sh" "$INSTALL_BIN_DIR/p2p-watchdog"
+    cp "$REPO_DIR/scripts/p2p-power.sh"    "$INSTALL_BIN_DIR/p2p-power"
+    chmod +x "$INSTALL_BIN_DIR/p2p-init"
+    chmod +x "$INSTALL_BIN_DIR/p2p-watchdog"
+    chmod +x "$INSTALL_BIN_DIR/p2p-power"
+    log "Scripts: $INSTALL_BIN_DIR/p2p-{init,watchdog,power}"
 
     # Systemd
     cp "$REPO_DIR/systemd/p2p-init.service"     "$INSTALL_SYSTEMD_DIR/"
