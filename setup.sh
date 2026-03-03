@@ -245,6 +245,45 @@ apply_conf() {
         "$src" > "$dst"
 }
 
+# ── Purge existing wpa_supplicant configs ─────────────────
+# Prevents the client from connecting to a previously configured
+# network (e.g. home Wi-Fi baked into the OS image).
+purge_wpa_configs() {
+    header "Cleaning Existing wpa_supplicant Configs"
+
+    # Stop wpa_supplicant if running
+    if pgrep -x wpa_supplicant > /dev/null; then
+        log "Stopping wpa_supplicant..."
+        killall wpa_supplicant 2>/dev/null || true
+        sleep 1
+    fi
+
+    # Remove the system-wide default config (RPi, Ubuntu, Debian all use this)
+    if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
+        warn "Removing /etc/wpa_supplicant/wpa_supplicant.conf"
+        rm -f /etc/wpa_supplicant/wpa_supplicant.conf
+    fi
+
+    # Remove any per-interface configs (wpa_supplicant-wlan0.conf etc.)
+    for f in /etc/wpa_supplicant/wpa_supplicant-*.conf; do
+        [ -f "$f" ] || continue
+        warn "Removing $f"
+        rm -f "$f"
+    done
+
+    # Disable wpa_supplicant system service if present (not our p2p services)
+    if systemctl is-enabled wpa_supplicant.service &>/dev/null; then
+        warn "Disabling system wpa_supplicant.service (replaced by p2p-init)"
+        systemctl disable wpa_supplicant.service 2>/dev/null || true
+        systemctl stop    wpa_supplicant.service 2>/dev/null || true
+    fi
+
+    # Clean up stale control sockets
+    rm -f /var/run/wpa_supplicant/* 2>/dev/null || true
+
+    log "wpa_supplicant slate wiped clean."
+}
+
 # ── Install all files ──────────────────────────────────────
 install_files() {
     header "Installing Files"
@@ -398,6 +437,7 @@ main() {
     load_device_profile
     determine_frequency
     check_iface "$P2P_IFACE"
+    purge_wpa_configs
     install_files
     write_uboot_env
     print_summary
