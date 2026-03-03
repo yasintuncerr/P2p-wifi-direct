@@ -31,11 +31,38 @@ CHECK_INTERVAL=5                # seconds between checks
 # ── Helpers ────────────────────────────────────────────────
 log() { logger -t "$TAG" "$1"; echo "[$(date '+%H:%M:%S')] [$TAG] $1"; }
 
+# ── Driver-aware power save toggle ────────────────────────
+# mlan* → Marvell 88W8997 (NXP) — requires mlanutl
+# wlan* → brcmfmac (RPi) or cfg80211 (Jetson) — iwconfig + iw
+set_power_save() {
+    local state="$1"   # "on" or "off"
+    local mlanu_val
+    [ "$state" = "on" ] && mlanu_val=1 || mlanu_val=0
+
+    case "$P2P_IFACE" in
+        mlan*)
+            # Marvell 88W8997 (AzureWave) — mlanutl pscfg 0/1
+            # NOTE: validate on device with: mlanutl mlan0 pscfg
+            if command -v mlanutl &>/dev/null; then
+                mlanutl "$P2P_IFACE" pscfg "$mlanu_val" 2>/dev/null || true
+            else
+                warn "mlanutl not found — power save not applied for $P2P_IFACE"
+            fi
+            ;;
+        *)
+            # brcmfmac (RPi): needs iwconfig
+            iwconfig "$P2P_IFACE" power "$state" 2>/dev/null || true
+            # cfg80211 (Jetson, others): needs iw
+            iw dev "$P2P_IFACE" set power_save "$state" 2>/dev/null || true
+            ;;
+    esac
+}
+
 # ── Performance mode: power save off, low-latency TX queue ─
 set_performance() {
     [ "$CURRENT_MODE" = "performance" ] && return
     log "→ PERFORMANCE mode (stream active)"
-    iw dev "$P2P_IFACE" set power_save off 2>/dev/null || true
+    set_power_save off
     tc qdisc replace dev "$P2P_IFACE" root pfifo_fast 2>/dev/null || true
     CURRENT_MODE="performance"
 }
@@ -44,7 +71,7 @@ set_performance() {
 set_efficient() {
     [ "$CURRENT_MODE" = "efficient" ] && return
     log "→ EFFICIENT mode (stream idle)"
-    iw dev "$P2P_IFACE" set power_save on 2>/dev/null || true
+    set_power_save on
     CURRENT_MODE="efficient"
 }
 
