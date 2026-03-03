@@ -1,6 +1,5 @@
 [Unit]
 Description=P2P Wi-Fi Direct - Start Connection
-# Wait until networj device ready
 After=network-pre.target
 Wants=network-pre.target
 
