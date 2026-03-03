@@ -14,9 +14,10 @@ WPA_CONF_DIR="/etc/wpa_supplicant"
 STATE_FILE="/run/p2p-connected"
 WPA_LOG="/var/log/wpa_supplicant.log"
 
-log() { logger -t "$TAG" "$1"; echo "[$(date '+%H:%M:%S')] [$TAG] $1"; }
-die() { log "ERROR: $1"; exit 1; }
-ok()  { log "OK: $1"; }
+log()  { logger -t "$TAG" "$1"; echo "[$(date '+%H:%M:%S')] [$TAG] $1"; }
+die()  { log "ERROR: $1"; exit 1; }
+ok()   { log "OK: $1"; }
+warn() { log "WARN: $1"; }
 
 # ── U-Boot env override (NXP only) ────────────────────────────────
 uboot_override() {
