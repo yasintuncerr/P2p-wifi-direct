@@ -37,18 +37,20 @@ DEVICE=""
 UNINSTALL=false
 ARG_SSID=""
 ARG_PSK=""
+ARG_FREQ=""
 
 # ── Argument Parsing ──────────────────────────────────────────────
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --role) ROLE="$2"; shift 2 ;;
-            --device) DEVICE="$2"; shift 2 ;;
-            --ssid) ARG_SSID="$2"; shift 2 ;;
-            --psk) ARG_PSK="$2"; shift 2 ;;
+            --role)      ROLE="$2";     shift 2 ;;
+            --device)    DEVICE="$2";   shift 2 ;;
+            --ssid)      ARG_SSID="$2"; shift 2 ;;
+            --psk)       ARG_PSK="$2";  shift 2 ;;
+            --freq)      ARG_FREQ="$2"; shift 2 ;;  # 5 or 2.4
             --uninstall) UNINSTALL=true; shift ;;
-            -h| --help) show_help; exit 0 ;;
-            *) die "Unknown argument: $1" ;;
+            -h|--help)   show_help; exit 0 ;;
+            *)           die "Unknown argument: $1" ;;
         esac
     done
 }
@@ -57,13 +59,15 @@ show_help() {
     echo -e "${BOLD}Usage:${NC}"
     echo "  $0                    → interactive mode"
     echo "  $0 --role host --device nxp"
+    echo "  $0 --role host --device nxp --freq 5"
     echo "  $0 --role host --device rpi3bp --ssid MyNetwork --psk MyPassword"
     echo "  $0 --role client --device rpi"
     echo "  $0 --role client --device jetson"
     echo "  $0 --uninstall        → uninstall mode"
     echo ""
-    echo "Roles: host | client"
+    echo "Roles:   host | client"
     echo "Devices: nxp | jetson | rpi | rpi3bp | rpi4 | rpi5"
+    echo "Freq:    5 | 2.4  (only for 5GHz-capable devices)"
 }
 
 # ── Root Check ──────────────────────────────────────────────
@@ -95,6 +99,7 @@ check_deps() {
         die "Failed to install dependencies. Please install manually: ${missing[*]}"
     fi
 }
+
 # ── P2P support check ──────────────────────────────────────────────
 check_p2p_support() {
     local iface="$1"
@@ -107,10 +112,10 @@ check_p2p_support() {
     fi
 
     if iw phy 2>/dev/null | grep -q "P2P-GO"; then
-        log "P2P-Go support detected."
+        log "P2P-GO support detected."
     else
-        warn "P2P-Go support not detected. This device may not work as a host."
-    fi 
+        warn "P2P-GO support not detected. This device may not work as a host."
+    fi
 }
 
 # ── 5GHz support check ──────────────────────────────────────────────
@@ -125,31 +130,30 @@ check_5ghz_support() {
 
 
 # ═══════════════════════════════════════════════════════════
-# İnteractive mode
+# Interactive mode
 # ═══════════════════════════════════════════════════════════
 interactive_setup() {
     echo -e "${BOLD}${CYAN}"
     echo "  ╔═══════════════════════════════════════════╗"
     echo "  ║    P2P Wi-Fi Direct Setup v1.0            ║"
-    echo "  ║    NXP · Jetson Nano · RPi (Zero 2W, 3/4/5║"
+    echo "  ║    NXP · Jetson Nano · RPi (Zero 2W, 3/4/5)║"
     echo "  ╚═══════════════════════════════════════════╝"
     echo -e "${NC}"
 
     # Role selection
-    header "Select Role"
-    echo "  [1] host    -> Host (Access Point)"
-    echo "  [2] client  -> Client (Station)"
+    header "1. Select Role"
+    echo "  [1] host    → Host (Group Owner)"
+    echo "  [2] client  → Client (Station)"
     echo ""
     while true; do
-        read -rp "  Chose role (1/2): " role_choice
+        read -rp "  Choose role (1/2): " role_choice
         case "$role_choice" in
-            1) ROLE="host"; break ;;
+            1) ROLE="host";   break ;;
             2) ROLE="client"; break ;;
             *) warn "Please enter 1 or 2." ;;
         esac
     done
     log "Role: $ROLE"
-
 
     # Device selection
     header "2. Device Selection"
@@ -163,63 +167,30 @@ interactive_setup() {
     while true; do
         read -rp "  Choose device (1-6): " device_choice
         case "$device_choice" in
-            1) DEVICE="nxp"; break ;;
+            1) DEVICE="nxp";    break ;;
             2) DEVICE="jetson"; break ;;
-            3) DEVICE="rpi"; break ;;
+            3) DEVICE="rpi";    break ;;
             4) DEVICE="rpi3bp"; break ;;
-            5) DEVICE="rpi4"; break ;;
-            6) DEVICE="rpi5"; break ;;
+            5) DEVICE="rpi4";   break ;;
+            6) DEVICE="rpi5";   break ;;
             *) warn "Please enter a number between 1 and 6." ;;
         esac
     done
     log "Device: $DEVICE"
 
+    # Network identification (Optional)
+    header "3. Network Identification (Optional)"
+    read -rp "  SSID [default: DIRECT-NXPStream]: " custom_ssid
+    P2P_SSID="${custom_ssid:-DIRECT-NXPStream}"
 
-    # ── Scenario check ──────────────────────────────────────────────
-    header "Scenario Information"
-    echo "  Which device pairs with which role?"
-    echo "  [1] Host: NXP i.MX8M(client) ↔ NXP i.MX8M(host)"
-    echo "  [2] Host: NXP i.MX8M(client) ↔ Jetson Nano(host)"
-    echo "  [3] Host: NXP i.MX8M(client) ↔ RPi (Zero 2W(Only 2.4GHz), 3/4/5)(host)"
-    echo "  [4] Host: Jetson Nano(client) ↔ NXP i.MX8M(host)"
-    echo "  [5] Host: Jetson Nano(client) ↔ Jetson Nano(host)"
-    echo "  [6] Host: Jetson Nano(client) ↔ RPi (Zero 2W(Only 2.4GHz), 3/4/5)(host)"
-    echo "  [7] Host: RPi (Zero 2W(Only 2.4GHz), 3/4/5)(client) ↔ NXP i.MX8M(host)"
-    echo "  [8] Host: RPi (Zero 2W(Only 2.4GHz), 3/4/5)(client) ↔ Jetson Nano(host)"
-    echo "  [9] Host: RPi (Zero 2W(Only 2.4GHz), 3/4/5)(client) ↔ RPi (Zero 2W(Only 2.4GHz), 3/4/5)(host)"
-    echo "  [0] Custom scenario (manual configuration)"
+    read -rp "  PSK (Password) [default: Str0ngP@ssw0rd!]: " custom_psk
     echo ""
-    while true; do
-        read -rp "  Choose scenario (1-9): " scenario_choice
-        case "$scenario_choice" in
-            1) SCENARIO="nxp-nxp"; break ;;
-            2) SCENARIO="nxp-jetson"; break ;;
-            3) SCENARIO="nxp-rpi"; break ;;
-            4) SCENARIO="jetson-nxp"; break ;;
-            5) SCENARIO="jetson-jetson"; break ;;
-            6) SCENARIO="jetson-rpi"; break ;;
-            7) SCENARIO="rpi-nxp"; break ;;
-            8) SCENARIO="rpi-jetson"; break ;;
-            9) SCENARIO="rpi-rpi"; break ;;
-            0) SCENARIO="custom"; break ;;
-            *) warn "Please enter a number between 0 and 9." ;;
-        esac
-    done
-
-
-    # ── Network identification(Optional) ──────────────────────────────────────────────
-    header "Network Identification (Optional)"
-    read -rp "  SSID [default: P2P-Direct]: " custom_ssid
-    P2P_SSID="${custom_ssid:-P2P-Direct}"
-
-    read -rp "  PSK (Password) [default: Str0ngP@ssword!]: " custom_psk
-    echo ""
-    P2P_PSK="${custom_psk:-Str0ngP@ssword!}"
+    P2P_PSK="${custom_psk:-Str0ngP@ssw0rd!}"
     if [ ${#P2P_PSK} -lt 8 ]; then
         die "PSK must be at least 8 characters long."
     fi
 
-    log "SSID: $P2P_SSID | PSK: (gizli)" 
+    log "SSID: $P2P_SSID | PSK: (hidden)"
 }
 
 
@@ -233,10 +204,7 @@ load_device_profile() {
     log "Device profile loaded: $DEVICE"
 }
 
-
 generate_device_names() {
-    # Device type + role → the name this device will publish in wpa_supplicant
-    # Only 
     local prefix
     case "$DEVICE_TYPE" in
         nxp)    prefix="NXP"    ;;
@@ -254,53 +222,58 @@ generate_device_names() {
         P2P_THIS_DEVICE_NAME="${prefix}-CLIENT"
     fi
 
-    # fill both placeholder for  apply_conf 
     P2P_HOST_DEVICE_NAME="${prefix}-HOST"
     P2P_CLIENT_DEVICE_NAME="${prefix}-CLIENT"
 
     log "This Device Name: $P2P_THIS_DEVICE_NAME"
 }
 
+# ── Frequency Selection ──────────────────────────────────────────────
 determine_frequency() {
-    header "Determining Frequency Band"
+    header "Frequency Band"
 
-    case "$SCENARIO" in
-        nxp-rpi | jetson-rpi | rpi-nxp | rpi-jetson | rpi-rpi)
-            #Rpi Zero 2W only supports 2.4GHz, so if it's in the scenario, we must use 2.4GHz
-            if [[ "$DEVICE_TYPE" == "rpi" ]]; then
-                P2P_CHANNEL="$P2P_CHANNEL_24"
-                P2P_FREQ="$P2P_FREQ_24"
-                P2P_REG_CLASS="$P2P_REG_CLASS_24"
-            else 
-                log "5GHz using: Ch:$P2P_CHANNEL ($P2P_FREQ MHz)"
-            fi
-            ;;
-        custom)
-            echo "  [1] 5GHz - Channel 44 (5220 MHz) - Suggested"
-            echo "  [2] 5GHz - Channel 36 (5180 MHz)"
-            echo "  [3] 5GHz - Channel 149 (5745 MHz)"
-            echo "  [4] 2.4GHz - Channel 6 (2437 MHz)"
-            read -rp "  Choose frequency (1-4):"  f_choice
-            case "$f_choice" in
-                1) P2P_CHANNEL=44; P2P_FREQ=5220; P2P_REG_CLASS=115 ;;
-                2) P2P_CHANNEL=36; P2P_FREQ=5180; P2P_REG_CLASS=115 ;;
-                3) P2P_CHANNEL=149; P2P_FREQ=5745; P2P_REG_CLASS=115 ;;
-                4) P2P_CHANNEL=6; P2P_FREQ=2437; P2P_REG_CLASS=81 ;;
-                *) P2P_CHANNEL=44; P2P_FREQ=5220; P2P_REG_CLASS=115 ;;
-            esac
-            ;;
-        *)
-            if [ "$SUPPORTS_5GHZ" = "true" ]; then
-                log "5GHz using: Ch:$P2P_CHANNEL ($P2P_FREQ MHz)"
-            else
-                P2P_CHANNEL="$P2P_CHANNEL_24"
-                P2P_FREQ="$P2P_FREQ_24"
-                P2P_REG_CLASS="$P2P_REG_CLASS_24"
-                warn "5GHz not supported, falling back to 2.4GHz: Ch:$P2P_CHANNEL ($P2P_FREQ MHz)"
-            fi
-             ;;
+    # Device doesn't support 5GHz → force 2.4GHz, no question asked
+    if [ "$SUPPORTS_5GHZ" != "true" ]; then
+        P2P_CHANNEL="$P2P_CHANNEL_24"
+        P2P_FREQ="$P2P_FREQ_24"
+        P2P_REG_CLASS="$P2P_REG_CLASS_24"
+        warn "This device only supports 2.4GHz. Using Ch:$P2P_CHANNEL (${P2P_FREQ}MHz)"
+        return
+    fi
+
+    # If freq was passed via --freq argument
+    if [ -n "$ARG_FREQ" ]; then
+        case "$ARG_FREQ" in
+            5)   log "5GHz selected via argument: Ch:$P2P_CHANNEL (${P2P_FREQ}MHz)"; return ;;
+            2.4) P2P_CHANNEL="$P2P_CHANNEL_24"; P2P_FREQ="$P2P_FREQ_24"; P2P_REG_CLASS="$P2P_REG_CLASS_24"
+                 log "2.4GHz selected via argument: Ch:$P2P_CHANNEL (${P2P_FREQ}MHz)"; return ;;
+            *)   warn "Unknown --freq value '$ARG_FREQ'. Defaulting to 5GHz." ; return ;;
         esac
+    fi
+
+    # Device supports 5GHz → ask user
+    echo "  [1] 5GHz  — Channel 44 (5220 MHz)  ← Recommended"
+    echo "  [2] 2.4GHz — Channel 6  (2437 MHz)"
+    echo ""
+    while true; do
+        read -rp "  Choose frequency band (1/2): " f_choice
+        case "$f_choice" in
+            1)
+                log "5GHz selected: Ch:$P2P_CHANNEL (${P2P_FREQ}MHz)"
+                break
+                ;;
+            2)
+                P2P_CHANNEL="$P2P_CHANNEL_24"
+                P2P_FREQ="$P2P_FREQ_24"
+                P2P_REG_CLASS="$P2P_REG_CLASS_24"
+                log "2.4GHz selected: Ch:$P2P_CHANNEL (${P2P_FREQ}MHz)"
+                break
+                ;;
+            *) warn "Please enter 1 or 2." ;;
+        esac
+    done
 }
+
 
 # ═══════════════════════════════════════════════════════════
 #  Install Files
@@ -308,7 +281,7 @@ determine_frequency() {
 install_files() {
     header "Installing Configuration and Service Files"
 
-    # ──  /etc/default/video-node  ───────────────────────────────────────────────
+    # ── /etc/default/video-node ─────────────────────────────────────────────
     local env_content
     env_content=$(cat "$REPO_DIR/config/video-node.env.template")
     env_content="${env_content//__ROLE__/$ROLE}"
@@ -319,24 +292,18 @@ install_files() {
     env_content="${env_content//__REG_CLASS__/$P2P_REG_CLASS}"
     env_content="${env_content//__UBOOT__/$UBOOT_ENV_SUPPORT}"
 
-
-
     echo "$env_content" > "$INSTALL_ENV_FILE"
-    # Update SSID and PSK
-    sed -i "s|P2P_SSID=.*|P2P_SSID=\"${P2P_SSID:-DIRECT-NXPStream}\"|" "$INSTALL_ENV_FILE"
-    sed -i "s|P2P_PSK=.*|P2P_PSK=\"${P2P_PSK:-Str0ngP@ssw0rd!}\"|" "$INSTALL_ENV_FILE"
+    sed -i "s|P2P_SSID=.*|P2P_SSID=\"${P2P_SSID:-DIRECT-NXPStream}\"|"   "$INSTALL_ENV_FILE"
+    sed -i "s|P2P_PSK=.*|P2P_PSK=\"${P2P_PSK:-Str0ngP@ssw0rd!}\"|"       "$INSTALL_ENV_FILE"
     log "Configuration: $INSTALL_ENV_FILE"
 
     # ── wpa_supplicant confs ─────────────────────────────
     mkdir -p "$INSTALL_CONF_DIR"
-
-
-
     apply_conf "$REPO_DIR/config/p2p-host.conf"   "$INSTALL_CONF_DIR/p2p-host.conf"
     apply_conf "$REPO_DIR/config/p2p-client.conf" "$INSTALL_CONF_DIR/p2p-client.conf"
     log "wpa_supplicant conf: $INSTALL_CONF_DIR/p2p-{host,client}.conf"
 
-    # ── Scripts  ────────────────────────────────────────────
+    # ── Scripts ────────────────────────────────────────────
     cp "$REPO_DIR/scripts/p2p-init.sh"     "$INSTALL_BIN_DIR/p2p-init.sh"
     cp "$REPO_DIR/scripts/p2p-watchdog.sh" "$INSTALL_BIN_DIR/p2p-watchdog.sh"
     chmod +x "$INSTALL_BIN_DIR/p2p-init.sh"
@@ -358,7 +325,7 @@ install_files() {
 # ═══════════════════════════════════════════════════════════
 write_uboot_env() {
     [ "$UBOOT_ENV_SUPPORT" != "true" ] && return
-    command -v fw_setenv &>/dev/null || { warn "fw_setenv couldn't be found, U-Boot env not written."; return; }
+    command -v fw_setenv &>/dev/null || { warn "fw_setenv not found, U-Boot env not written."; return; }
 
     header "U-Boot Environment writing"
     fw_setenv node_role     "$ROLE"
@@ -371,9 +338,8 @@ write_uboot_env() {
 }
 
 
-
 # ═══════════════════════════════════════════════════════════
-# Uninstall Function
+# Uninstall
 # ═══════════════════════════════════════════════════════════
 uninstall() {
     header "Uninstalling"
@@ -381,10 +347,10 @@ uninstall() {
     read -rp "Are you sure? (y/n): " ans
     [ "$ans" != "y" ] && { info "Cancelled."; exit 0; }
 
-    systemctl stop p2p-watchdog.service 2>/dev/null || true
-    systemctl stop p2p-init.service 2>/dev/null || true
+    systemctl stop  p2p-watchdog.service 2>/dev/null || true
+    systemctl stop  p2p-init.service     2>/dev/null || true
     systemctl disable p2p-watchdog.service 2>/dev/null || true
-    systemctl disable p2p-init.service 2>/dev/null || true
+    systemctl disable p2p-init.service     2>/dev/null || true
 
     rm -f "$INSTALL_SYSTEMD_DIR/p2p-init.service"
     rm -f "$INSTALL_SYSTEMD_DIR/p2p-watchdog.service"
@@ -402,7 +368,6 @@ uninstall() {
 }
 
 
-
 # ═══════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════
@@ -410,11 +375,11 @@ print_summary() {
     header "Installation Complete"
     echo -e "  ${BOLD}Role:${NC}       $ROLE"
     echo -e "  ${BOLD}Device:${NC}     $DEVICE_TYPE"
-    echo -e "  ${BOLD}Interface:${NC}    $P2P_IFACE"
-    echo -e "  ${BOLD}Frequency:${NC}   ${P2P_FREQ}MHz (Channel ${P2P_CHANNEL})"
-    echo -e "  ${BOLD}SSID:${NC}      ${P2P_SSID:-DIRECT-NXPStream}"
-    echo -e "  ${BOLD}Host IP:${NC}   192.168.77.1"
-    echo -e "  ${BOLD}Client IP:${NC} 192.168.77.2"
+    echo -e "  ${BOLD}Interface:${NC}  $P2P_IFACE"
+    echo -e "  ${BOLD}Frequency:${NC}  ${P2P_FREQ}MHz (Channel ${P2P_CHANNEL})"
+    echo -e "  ${BOLD}SSID:${NC}       ${P2P_SSID:-DIRECT-NXPStream}"
+    echo -e "  ${BOLD}Host IP:${NC}    192.168.77.1"
+    echo -e "  ${BOLD}Client IP:${NC}  192.168.77.2"
     echo ""
     echo -e "  ${CYAN}To start:${NC}"
     echo "    systemctl start p2p-init.service"
@@ -431,66 +396,9 @@ print_summary() {
 }
 
 
-
 # ═══════════════════════════════════════════════════════════
-# Main
+# apply_conf helper (must be defined before main calls it)
 # ═══════════════════════════════════════════════════════════
-main() {
-    local SCENARIO=""
-    parse_args "$@"
-    check_root
-
-    if [ "$UNINSTALL" = true ]; then
-        uninstall
-    fi
-
-    SCENARIO="${SCENARIO:-default}"
-    if [ -f "$INSTALL_ENV_FILE" ]; then
-        info "Old P2P configuration found. Previous network information is preserved..."
-        local prev_ssid=$(grep "^P2P_SSID=" "$INSTALL_ENV_FILE" | cut -d'"' -f2 || true)
-        local prev_psk=$(grep "^P2P_PSK=" "$INSTALL_ENV_FILE" | cut -d'"' -f2 || true)
-        
-        [ -z "$ARG_SSID" ] && [ -n "$prev_ssid" ] && ARG_SSID="$prev_ssid"
-        [ -z "$ARG_PSK" ] && [ -n "$prev_psk" ] && ARG_PSK="$prev_psk"
-    fi
-
-    # If any missing arguments, fallback to interactive setup 
-    if [ -z "$ROLE" ] || [ -z "$DEVICE" ]; then
-        interactive_setup
-    else
-        # Non-interaktif: comes from args, decide scenario automatically
-        case "${ROLE}-${DEVICE}" in
-            host-nxp)      SCENARIO="nxp-nxp"       ;;
-            host-jetson)   SCENARIO="jetson-jetson" ;;
-            host-rpi)      SCENARIO="rpi-rpi"       ;;
-            host-rpi3bp)   SCENARIO="rpi-rpi"       ;;
-            host-rpi4)     SCENARIO="rpi-rpi"       ;;
-            host-rpi5)     SCENARIO="rpi-rpi"       ;;
-            client-nxp)    SCENARIO="nxp-nxp"       ;;
-            client-jetson) SCENARIO="jetson-jetson" ;;
-            client-rpi)    SCENARIO="rpi-rpi"       ;;
-            client-rpi3bp) SCENARIO="rpi-rpi"       ;;
-            client-rpi4)   SCENARIO="rpi-rpi"       ;;
-            client-rpi5)   SCENARIO="rpi-rpi"       ;;
-            *) SCENARIO="custom" ;;
-        esac
-        
-        P2P_SSID="${ARG_SSID:-DIRECT-NXPStream}"
-        P2P_PSK="${ARG_PSK:-Str0ngP@ssw0rd!}"
-        info "Argument mode: role=$ROLE, device=$DEVICE (SSID: $P2P_SSID)"
-    fi
-
-    check_deps
-    load_device_profile
-    generate_device_names
-    determine_frequency
-    check_p2p_support "$P2P_IFACE"
-    install_files
-    write_uboot_env
-    print_summary
-}
-
-# inline func tanımı için bash 4.x uyumluluk
 apply_conf() {
     local src="$1" dst="$2"
     sed \
@@ -502,6 +410,47 @@ apply_conf() {
         -e "s/__HOST_DEVICE_NAME__/${P2P_HOST_DEVICE_NAME:-P2P-HOST-NODE}/g" \
         -e "s/__CLIENT_DEVICE_NAME__/${P2P_CLIENT_DEVICE_NAME:-P2P-CLIENT-NODE}/g" \
         "$src" > "$dst"
+}
+
+
+# ═══════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════
+main() {
+    parse_args "$@"
+    check_root
+
+    if [ "$UNINSTALL" = true ]; then
+        uninstall
+    fi
+
+    # Preserve existing SSID/PSK if re-running setup
+    if [ -f "$INSTALL_ENV_FILE" ]; then
+        info "Existing configuration found. Preserving network credentials..."
+        local prev_ssid prev_psk
+        prev_ssid=$(grep "^P2P_SSID=" "$INSTALL_ENV_FILE" | cut -d'"' -f2 || true)
+        prev_psk=$(grep  "^P2P_PSK="  "$INSTALL_ENV_FILE" | cut -d'"' -f2 || true)
+        [ -z "$ARG_SSID" ] && [ -n "$prev_ssid" ] && ARG_SSID="$prev_ssid"
+        [ -z "$ARG_PSK"  ] && [ -n "$prev_psk"  ] && ARG_PSK="$prev_psk"
+    fi
+
+    # If role or device missing → interactive
+    if [ -z "$ROLE" ] || [ -z "$DEVICE" ]; then
+        interactive_setup
+    else
+        P2P_SSID="${ARG_SSID:-DIRECT-NXPStream}"
+        P2P_PSK="${ARG_PSK:-Str0ngP@ssw0rd!}"
+        info "Non-interactive mode: role=$ROLE, device=$DEVICE (SSID: $P2P_SSID)"
+    fi
+
+    check_deps
+    load_device_profile
+    generate_device_names
+    determine_frequency
+    check_p2p_support "$P2P_IFACE"
+    install_files
+    write_uboot_env
+    print_summary
 }
 
 main "$@"
