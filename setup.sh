@@ -47,7 +47,7 @@ parse_args() {
             --device)    DEVICE="$2";   shift 2 ;;
             --ssid)      ARG_SSID="$2"; shift 2 ;;
             --psk)       ARG_PSK="$2";  shift 2 ;;
-            --freq)      ARG_FREQ="$2"; shift 2 ;;  # 5 or 2.4
+            --freq)      ARG_FREQ="$2"; shift 2 ;;
             --uninstall) UNINSTALL=true; shift ;;
             -h|--help)   show_help; exit 0 ;;
             *)           die "Unknown argument: $1" ;;
@@ -75,6 +75,14 @@ check_root() {
     if [[ $EUID -ne 0 ]]; then
         die "Root privileges are required. Please run with 'sudo ./setup.sh'"
     fi
+}
+
+# ── Load template defaults ─────────────────────────────────
+load_template_defaults() {
+    local tmpl="$REPO_DIR/config/video-node.env.template"
+    [ -f "$tmpl" ] || die "Template not found: $tmpl"
+    DEFAULT_SSID=$(grep "^P2P_SSID=" "$tmpl" | cut -d'"' -f2)
+    DEFAULT_PSK=$(grep  "^P2P_PSK="  "$tmpl" | cut -d'"' -f2)
 }
 
 # ── Dependency Check ──────────────────────────────────────────────
@@ -180,12 +188,12 @@ interactive_setup() {
 
     # Network identification (Optional)
     header "3. Network Identification (Optional)"
-    read -rp "  SSID [default: DIRECT-NXPStream]: " custom_ssid
-    P2P_SSID="${custom_ssid:-DIRECT-NXPStream}"
+    read -rp "  SSID [default: ${DEFAULT_SSID}]: " custom_ssid
+    P2P_SSID="${custom_ssid:-$DEFAULT_SSID}"
 
-    read -rp "  PSK (Password) [default: Str0ngP@ssw0rd!]: " custom_psk
+    read -rp "  PSK  [default: ${DEFAULT_PSK}]: " custom_psk
     echo ""
-    P2P_PSK="${custom_psk:-Str0ngP@ssw0rd!}"
+    P2P_PSK="${custom_psk:-$DEFAULT_PSK}"
     if [ ${#P2P_PSK} -lt 8 ]; then
         die "PSK must be at least 8 characters long."
     fi
@@ -247,12 +255,12 @@ determine_frequency() {
             5)   log "5GHz selected via argument: Ch:$P2P_CHANNEL (${P2P_FREQ}MHz)"; return ;;
             2.4) P2P_CHANNEL="$P2P_CHANNEL_24"; P2P_FREQ="$P2P_FREQ_24"; P2P_REG_CLASS="$P2P_REG_CLASS_24"
                  log "2.4GHz selected via argument: Ch:$P2P_CHANNEL (${P2P_FREQ}MHz)"; return ;;
-            *)   warn "Unknown --freq value '$ARG_FREQ'. Defaulting to 5GHz." ; return ;;
+            *)   warn "Unknown --freq value '$ARG_FREQ'. Defaulting to 5GHz."; return ;;
         esac
     fi
 
     # Device supports 5GHz → ask user
-    echo "  [1] 5GHz  — Channel 44 (5220 MHz)  ← Recommended"
+    echo "  [1] 5GHz   — Channel 44 (5220 MHz)  ← Recommended"
     echo "  [2] 2.4GHz — Channel 6  (2437 MHz)"
     echo ""
     while true; do
@@ -293,8 +301,8 @@ install_files() {
     env_content="${env_content//__UBOOT__/$UBOOT_ENV_SUPPORT}"
 
     echo "$env_content" > "$INSTALL_ENV_FILE"
-    sed -i "s|P2P_SSID=.*|P2P_SSID=\"${P2P_SSID:-DIRECT-NXPStream}\"|"   "$INSTALL_ENV_FILE"
-    sed -i "s|P2P_PSK=.*|P2P_PSK=\"${P2P_PSK:-Str0ngP@ssw0rd!}\"|"       "$INSTALL_ENV_FILE"
+    sed -i "s|P2P_SSID=.*|P2P_SSID=\"${P2P_SSID}\"|" "$INSTALL_ENV_FILE"
+    sed -i "s|P2P_PSK=.*|P2P_PSK=\"${P2P_PSK}\"|"     "$INSTALL_ENV_FILE"
     log "Configuration: $INSTALL_ENV_FILE"
 
     # ── wpa_supplicant confs ─────────────────────────────
@@ -377,7 +385,7 @@ print_summary() {
     echo -e "  ${BOLD}Device:${NC}     $DEVICE_TYPE"
     echo -e "  ${BOLD}Interface:${NC}  $P2P_IFACE"
     echo -e "  ${BOLD}Frequency:${NC}  ${P2P_FREQ}MHz (Channel ${P2P_CHANNEL})"
-    echo -e "  ${BOLD}SSID:${NC}       ${P2P_SSID:-DIRECT-NXPStream}"
+    echo -e "  ${BOLD}SSID:${NC}       $P2P_SSID"
     echo -e "  ${BOLD}Host IP:${NC}    192.168.77.1"
     echo -e "  ${BOLD}Client IP:${NC}  192.168.77.2"
     echo ""
@@ -397,7 +405,7 @@ print_summary() {
 
 
 # ═══════════════════════════════════════════════════════════
-# apply_conf helper (must be defined before main calls it)
+# apply_conf helper
 # ═══════════════════════════════════════════════════════════
 apply_conf() {
     local src="$1" dst="$2"
@@ -405,8 +413,8 @@ apply_conf() {
         -e "s/__CHANNEL__/$P2P_CHANNEL/g" \
         -e "s/__REG_CLASS__/$P2P_REG_CLASS/g" \
         -e "s/__FREQ__/$P2P_FREQ/g" \
-        -e "s|__SSID__|${P2P_SSID:-DIRECT-NXPStream}|g" \
-        -e "s|__PSK__|${P2P_PSK:-Str0ngP@ssw0rd!}|g" \
+        -e "s|__SSID__|${P2P_SSID}|g" \
+        -e "s|__PSK__|${P2P_PSK}|g" \
         -e "s/__HOST_DEVICE_NAME__/${P2P_HOST_DEVICE_NAME:-P2P-HOST-NODE}/g" \
         -e "s/__CLIENT_DEVICE_NAME__/${P2P_CLIENT_DEVICE_NAME:-P2P-CLIENT-NODE}/g" \
         "$src" > "$dst"
@@ -419,6 +427,7 @@ apply_conf() {
 main() {
     parse_args "$@"
     check_root
+    load_template_defaults
 
     if [ "$UNINSTALL" = true ]; then
         uninstall
@@ -430,16 +439,16 @@ main() {
         local prev_ssid prev_psk
         prev_ssid=$(grep "^P2P_SSID=" "$INSTALL_ENV_FILE" | cut -d'"' -f2 || true)
         prev_psk=$(grep  "^P2P_PSK="  "$INSTALL_ENV_FILE" | cut -d'"' -f2 || true)
-        [ -z "$ARG_SSID" ] && [ -n "$prev_ssid" ] && ARG_SSID="$prev_ssid"
-        [ -z "$ARG_PSK"  ] && [ -n "$prev_psk"  ] && ARG_PSK="$prev_psk"
+        [ -n "$prev_ssid" ] && DEFAULT_SSID="$prev_ssid"
+        [ -n "$prev_psk"  ] && DEFAULT_PSK="$prev_psk"
     fi
 
     # If role or device missing → interactive
     if [ -z "$ROLE" ] || [ -z "$DEVICE" ]; then
         interactive_setup
     else
-        P2P_SSID="${ARG_SSID:-DIRECT-NXPStream}"
-        P2P_PSK="${ARG_PSK:-Str0ngP@ssw0rd!}"
+        P2P_SSID="${ARG_SSID:-$DEFAULT_SSID}"
+        P2P_PSK="${ARG_PSK:-$DEFAULT_PSK}"
         info "Non-interactive mode: role=$ROLE, device=$DEVICE (SSID: $P2P_SSID)"
     fi
 
