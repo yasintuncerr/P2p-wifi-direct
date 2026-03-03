@@ -280,19 +280,25 @@ purge_wpa_configs() {
         fi
     done
 
-    # ── dhcpcd: stop it from managing the Wi-Fi interface ──
-    # On RPi, dhcpcd spawns its own wpa_supplicant and connects
-    # to previously known networks before our service starts.
+    # ── dhcpcd: stop it from touching the Wi-Fi interface ──
+    # On RPi, dhcpcd spawns its own wpa_supplicant and grabs wlan0
+    # before our service starts. We tell dhcpcd to see the interface
+    # but do absolutely nothing with it — no wpa_supplicant, no DHCP.
     if [ -f /etc/dhcpcd.conf ]; then
-        if ! grep -q "denyinterfaces $P2P_IFACE" /etc/dhcpcd.conf; then
-            warn "Adding 'denyinterfaces $P2P_IFACE' to /etc/dhcpcd.conf"
-            echo "" >> /etc/dhcpcd.conf
-            echo "# p2p-wifi-direct: manage $P2P_IFACE manually" >> /etc/dhcpcd.conf
-            echo "denyinterfaces $P2P_IFACE" >> /etc/dhcpcd.conf
+        if ! grep -q "^interface $P2P_IFACE" /etc/dhcpcd.conf; then
+            warn "Configuring dhcpcd to ignore $P2P_IFACE..."
+            cat >> /etc/dhcpcd.conf << DHCPEOF
+
+# p2p-wifi-direct: do not manage $P2P_IFACE
+interface $P2P_IFACE
+    nohook wpa_supplicant
+    nodhcp
+    noipv6
+DHCPEOF
+            log "dhcpcd configured for $P2P_IFACE"
         else
-            log "dhcpcd already configured to deny $P2P_IFACE"
+            log "dhcpcd already configured for $P2P_IFACE"
         fi
-        # Restart dhcpcd so the change takes effect
         systemctl restart dhcpcd.service 2>/dev/null || true
     fi
 
@@ -391,6 +397,13 @@ uninstall() {
     rm -f "/run/p2p-connected"
     rm -f "/run/p2p-power.cmd"
     rm -f "/var/log/wpa_supplicant.log"
+
+    # Restore dhcpcd.conf — remove the block we added
+    if [ -f /etc/dhcpcd.conf ]; then
+        sed -i "/# p2p-wifi-direct: do not manage/,/    noipv6/d" /etc/dhcpcd.conf
+        systemctl restart dhcpcd.service 2>/dev/null || true
+        log "dhcpcd.conf restored."
+    fi
 
     systemctl daemon-reload
     log "All P2P components removed."
