@@ -271,11 +271,35 @@ purge_wpa_configs() {
         rm -f "$f"
     done
 
-    # Disable wpa_supplicant system service if present (not our p2p services)
-    if systemctl is-enabled wpa_supplicant.service &>/dev/null; then
-        warn "Disabling system wpa_supplicant.service (replaced by p2p-init)"
-        systemctl disable wpa_supplicant.service 2>/dev/null || true
-        systemctl stop    wpa_supplicant.service 2>/dev/null || true
+    # Disable wpa_supplicant system service and per-interface variants
+    for svc in wpa_supplicant.service "wpa_supplicant@${P2P_IFACE}.service"; do
+        if systemctl is-enabled "$svc" &>/dev/null; then
+            warn "Disabling $svc"
+            systemctl disable "$svc" 2>/dev/null || true
+            systemctl stop    "$svc" 2>/dev/null || true
+        fi
+    done
+
+    # ── dhcpcd: stop it from managing the Wi-Fi interface ──
+    # On RPi, dhcpcd spawns its own wpa_supplicant and connects
+    # to previously known networks before our service starts.
+    if [ -f /etc/dhcpcd.conf ]; then
+        if ! grep -q "denyinterfaces $P2P_IFACE" /etc/dhcpcd.conf; then
+            warn "Adding 'denyinterfaces $P2P_IFACE' to /etc/dhcpcd.conf"
+            echo "" >> /etc/dhcpcd.conf
+            echo "# p2p-wifi-direct: manage $P2P_IFACE manually" >> /etc/dhcpcd.conf
+            echo "denyinterfaces $P2P_IFACE" >> /etc/dhcpcd.conf
+        else
+            log "dhcpcd already configured to deny $P2P_IFACE"
+        fi
+        # Restart dhcpcd so the change takes effect
+        systemctl restart dhcpcd.service 2>/dev/null || true
+    fi
+
+    # NetworkManager: tell it to ignore the interface too
+    if command -v nmcli &>/dev/null; then
+        warn "NetworkManager detected — setting $P2P_IFACE unmanaged"
+        nmcli device set "$P2P_IFACE" managed no 2>/dev/null || true
     fi
 
     # Clean up stale control sockets
