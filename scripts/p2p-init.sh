@@ -1,14 +1,13 @@
 #!/bin/bash
-
 # ───────────────────────────────────────────────────────────────────
-# P2P Wi-Fi Direct - Initializing Connection
-# Role and parameters reads from /etc/default/video-node
-# If U-Boot env are available, use them to override the parameters
+# P2P Wi-Fi Direct - Init
+# Host: AP (mode=2), Client: STA (mode=0)
+# Physical interface only — no virtual interfaces, no P2P overhead.
+# Power management is handled by p2p-power.service, not here.
 # ───────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
-# ── Load Base parameters from file ─────────────────────────────────
 source /etc/default/video-node
 
 TAG="p2p-init"
@@ -20,151 +19,128 @@ log() { logger -t "$TAG" "$1"; echo "[$(date '+%H:%M:%S')] [$TAG] $1"; }
 die() { log "ERROR: $1"; exit 1; }
 ok()  { log "OK: $1"; }
 
-# ── U-Boot env override (NXP) ──────────────────────────────────────
+# ── U-Boot env override (NXP only) ────────────────────────────────
 uboot_override() {
     [ "$UBOOT_ENV_SUPPORT" != "true" ] && return
     command -v fw_printenv &>/dev/null || return
-
-    log "U-Boot env checking..."
-
-    local _role _iface _channel _freq _req_class
+    log "Checking U-Boot env..."
+    local _role _iface _channel _freq _reg_class
     _role=$(fw_printenv -n node_role 2>/dev/null || true)
     _iface=$(fw_printenv -n p2p_iface 2>/dev/null || true)
     _channel=$(fw_printenv -n p2p_channel 2>/dev/null || true)
     _freq=$(fw_printenv -n p2p_freq 2>/dev/null || true)
-    _req_class=$(fw_printenv -n p2p_req_class 2>/dev/null || true)
-
+    _reg_class=$(fw_printenv -n p2p_reg_class 2>/dev/null || true)
     [ -n "$_role" ]      && { NODE_ROLE="$_role";          log "U-Boot -> NODE_ROLE=$NODE_ROLE"; }
     [ -n "$_iface" ]     && { P2P_IFACE="$_iface";         log "U-Boot -> P2P_IFACE=$P2P_IFACE"; }
     [ -n "$_channel" ]   && { P2P_CHANNEL="$_channel";     log "U-Boot -> P2P_CHANNEL=$P2P_CHANNEL"; }
     [ -n "$_freq" ]      && { P2P_FREQ="$_freq";           log "U-Boot -> P2P_FREQ=$P2P_FREQ"; }
-    [ -n "$_req_class" ] && { P2P_REQ_CLASS="$_req_class"; log "U-Boot -> P2P_REQ_CLASS=$P2P_REQ_CLASS"; }
+    [ -n "$_reg_class" ] && { P2P_REG_CLASS="$_reg_class"; log "U-Boot -> P2P_REG_CLASS=$P2P_REG_CLASS"; }
 }
 
-# ── Start wpa_supplicant ───────────────────────────────────────────
-start_wpa() {
-    local conf="$1"
 
+# ── Stop any existing wpa_supplicant ──────────────────────────────
+stop_wpa() {
     if pgrep -x wpa_supplicant > /dev/null; then
-        log "Old wpa_supplicant process found, cleaning up..."
+        log "Stopping existing wpa_supplicant..."
         killall wpa_supplicant 2>/dev/null || true
         sleep 1
     fi
-
     rm -f "/var/run/wpa_supplicant/$P2P_IFACE" 2>/dev/null || true
+}
 
+# ── Reset interface ────────────────────────────────────────────────
+reset_iface() {
     ip link set "$P2P_IFACE" down 2>/dev/null || true
-    sleep 0.5
-    ip link set "$P2P_IFACE" up 2>/dev/null || die "Failed to bring up interface $P2P_IFACE. Check with 'iw dev'."
+    sleep 0.3
+    ip link set "$P2P_IFACE" up || die "Cannot bring up $P2P_IFACE — check 'iw dev'"
+}
 
-    log "Starting wpa_supplicant..."
+
+# ── Start wpa_supplicant ──────────────────────────────────────────
+start_wpa() {
+    local conf="$1"
+    log "Starting wpa_supplicant ($conf)..."
     wpa_supplicant -B \
         -i "$P2P_IFACE" \
         -c "$conf" \
         -D nl80211 \
         -f "$WPA_LOG" \
-        || die "Failed to start wpa_supplicant. Check $WPA_LOG for details."
+        || die "wpa_supplicant failed. See $WPA_LOG"
 
     local timeout=10 elapsed=0
     until wpa_cli -i "$P2P_IFACE" ping &>/dev/null; do
         sleep 1; elapsed=$((elapsed+1))
-        [ $elapsed -ge $timeout ] && die "wpa_supplicant ctrl socket not responding."
+        [ $elapsed -ge $timeout ] && die "wpa_supplicant ctrl socket timeout."
     done
-    ok "wpa_supplicant started successfully."
+    ok "wpa_supplicant running."
 }
 
-# ── Assign Static IP ──────────────────────────────────────────────
+
+# ── Assign static IP ──────────────────────────────────────────────
 assign_ip() {
     local ip="$1"
-    log "Assigning IP $ip/24"
+    log "Assigning $ip/24 → $P2P_IFACE"
     ip addr flush dev "$P2P_IFACE" 2>/dev/null || true
     ip addr add "$ip/24" dev "$P2P_IFACE"
     ip link set "$P2P_IFACE" up
-    ok "IP assigned to $P2P_IFACE: $ip/24"
+    ok "$P2P_IFACE → $ip/24"
 }
 
-# ── Wait until connected ──────────────────────────────────────────
+# ── Wait for STA association (client) ─────────────────────────────
 wait_connected() {
     local timeout=25 elapsed=0
-    log "Waiting for wpa_state=COMPLETED (max ${timeout}s)..."
+    log "Waiting for COMPLETED state (max ${timeout}s)..."
     while [ $elapsed -lt $timeout ]; do
         local state
         state=$(wpa_cli -i "$P2P_IFACE" status 2>/dev/null \
             | grep "^wpa_state=" | cut -d= -f2 || echo "UNKNOWN")
-        [ "$state" = "COMPLETED" ] && { ok "Connection established."; return 0; }
+        [ "$state" = "COMPLETED" ] && { ok "Connected."; return 0; }
         sleep 1; elapsed=$((elapsed+1))
     done
-    log "Timeout: Connection not established."
+    log "Timeout: not connected."
     return 1
 }
 
-# ── Find Persistent Group ─────────────────────────────────────────
-get_net_id() {
-    wpa_cli -i "$P2P_IFACE" list_networks 2>/dev/null \
-        | awk -v ssid="$P2P_SSID" '$2 == ssid {print $1}' \
-        | head -1 || echo ""
-}
 
-# ── Host ──────────────────────────────────────────────────────────
+# ── HOST ──────────────────────────────────────────────────────────
 start_host() {
     log "======================================"
-    log "Role: HOST (Group Owner)"
+    log "Role: HOST (AP)"
     log "Device: $DEVICE_TYPE | Interface: $P2P_IFACE"
     log "Frequency: ${P2P_FREQ}MHz (Ch${P2P_CHANNEL}) | IP: $HOST_IP"
     log "======================================"
 
+    stop_wpa
+    reset_iface
     start_wpa "$WPA_CONF_DIR/p2p-host.conf"
 
-    local net_id
-    net_id=$(get_net_id)
-
-    if [ -n "$net_id" ]; then
-        log "Persistent group found (id=$net_id) -> starting directly..."
-        wpa_cli -i "$P2P_IFACE" p2p_group_add persistent="$net_id" freq="$P2P_FREQ"
-    else
-        log "First time setup -> creating new group..."
-        wpa_cli -i "$P2P_IFACE" p2p_group_add persistent freq="$P2P_FREQ"
-    fi
-
-    sleep 2
+    sleep 1
     assign_ip "$HOST_IP"
-    wpa_cli -i "$P2P_IFACE" p2p_stop_find
 
     touch "$STATE_FILE"
-    ok "Host setup complete. Waiting for clients to connect..."
+    ok "Host AP ready — waiting for clients."
 }
 
-# ── Client ────────────────────────────────────────────────────────
+
+# ── CLIENT ────────────────────────────────────────────────────────
 start_client() {
     log "======================================"
-    log "Role: CLIENT (Group Member)"
+    log "Role: CLIENT (STA)"
     log "Device: $DEVICE_TYPE | Interface: $P2P_IFACE"
     log "Frequency: ${P2P_FREQ}MHz (Ch${P2P_CHANNEL}) | IP: $CLIENT_IP"
     log "HOST: $HOST_IP"
     log "======================================"
 
+    stop_wpa
+    reset_iface
     start_wpa "$WPA_CONF_DIR/p2p-client.conf"
 
-    local net_id
-    net_id=$(get_net_id)
-
-    if [ -n "$net_id" ]; then
-        log "Persistent profile found (id=$net_id) -> connecting directly to HOST..."
-        wpa_cli -i "$P2P_IFACE" p2p_stop_find >/dev/null 2>&1 || true
-        wpa_cli -i "$P2P_IFACE" set_network "$net_id" disabled 0
-        wpa_cli -i "$P2P_IFACE" enable_network "$net_id"
-        wpa_cli -i "$P2P_IFACE" select_network "$net_id"
-    else
-        die "Network block not found in wpa_supplicant config! Please re-run setup.sh"
-    fi
-
-    wait_connected || { log "Connection failed. Watchdog will take over."; exit 1; }
+    wait_connected || { log "Connection failed — watchdog will retry."; exit 1; }
 
     assign_ip "$CLIENT_IP"
-    wpa_cli -i "$P2P_IFACE" p2p_stop_find
 
     touch "$STATE_FILE"
-    ok "CLIENT ready. IP: $CLIENT_IP | Gateway: $HOST_IP"
+    ok "Client connected. IP: $CLIENT_IP | Host: $HOST_IP"
 }
 
 # ── Main ──────────────────────────────────────────────────────────
@@ -178,5 +154,5 @@ uboot_override
 case "$NODE_ROLE" in
     host)   start_host ;;
     client) start_client ;;
-    *) die "Invalid NODE_ROLE: $NODE_ROLE. Must be 'host' or 'client'." ;;
+    *) die "Invalid NODE_ROLE: '$NODE_ROLE'. Must be 'host' or 'client'." ;;
 esac
