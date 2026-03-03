@@ -1,0 +1,19 @@
+[Unit]
+Description=P2P Wi-Fi Power Manager
+After=p2p-init.service
+Requires=p2p-init.service
+BindsTo=p2p-init.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/video-node
+ExecStart=/usr/local/bin/p2p-power.sh
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=p2p-power
+
+[Install]
+WantedBy=multi-user.target
