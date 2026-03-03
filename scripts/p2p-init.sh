@@ -36,13 +36,26 @@ uboot_override() {
     [ -n "$_reg_class" ] && { P2P_REG_CLASS="$_reg_class"; log "U-Boot -> P2P_REG_CLASS=$P2P_REG_CLASS"; }
 }
 
-# ── Stop any existing wpa_supplicant ──────────────────────────────
+# ── Stop any existing wpa_supplicant + release iface ──────────────
 stop_wpa() {
+    # 1. Release interface from dhcpcd so it stops managing wlan0
+    if systemctl is-active dhcpcd.service &>/dev/null; then
+        log "Releasing $P2P_IFACE from dhcpcd..."
+        dhcpcd --release "$P2P_IFACE" 2>/dev/null || true
+        sleep 0.5
+    fi
+
+    # 2. Kill any wpa_supplicant holding the interface
     if pgrep -x wpa_supplicant > /dev/null; then
         log "Stopping existing wpa_supplicant..."
         killall wpa_supplicant 2>/dev/null || true
         sleep 1
     fi
+
+    # 3. Flush IP assigned by dhcpcd (e.g. 192.168.1.x)
+    ip addr flush dev "$P2P_IFACE" 2>/dev/null || true
+
+    # 4. Clean stale control sockets
     rm -f "/var/run/wpa_supplicant/$P2P_IFACE" 2>/dev/null || true
 }
 
@@ -110,6 +123,11 @@ start_host() {
 
     stop_wpa
     reset_iface
+
+    # Lock regulatory domain to TR so client's Country IE doesn't
+    # trigger a regdom change and restart the AP mid-session.
+    iw reg set TR 2>/dev/null || true
+
     start_wpa "$WPA_CONF_DIR/p2p-host.conf"
 
     # Wait until AP is actually running (RUNNING flag appears)
