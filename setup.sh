@@ -20,7 +20,7 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_CONF_DIR="/etc/wpa_supplicant"
 INSTALL_ENV_FILE="/etc/default/video-node"
-INSTALL_BIN_DIR="/usr/local/bin"
+INSTALL_BIN_DIR="/usr/bin"
 INSTALL_SYSTEMD_DIR="/etc/systemd/system"
 
 # ── Helpers ────────────────────────────────────────────────
