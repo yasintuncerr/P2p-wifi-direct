@@ -7,7 +7,7 @@ BindsTo=p2p-init.service
 [Service]
 Type=simple
 EnvironmentFile=/etc/default/video-node
-ExecStart=/usr/local/bin/p2p-power.sh
+ExecStart=/usr/bin/p2p-power
 Restart=always
 RestartSec=3
 

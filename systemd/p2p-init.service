@@ -7,11 +7,9 @@ Wants=network-pre.target
 Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=/etc/default/video-node
-ExecStart=/usr/local/bin/p2p-init.sh
+ExecStart=/usr/bin/p2p-init
 ExecStop=/bin/sh -c 'wpa_cli -i $P2P_IFACE terminate 2>/dev/null; ip addr flush dev $P2P_IFACE 2>/dev/null; true'
 TimeoutStartSec=60
-Restart=on-failure
-RestartSec=5
 
 StandardOutput=journal
 StandardError=journal
