@@ -22,7 +22,7 @@ warn() { log "WARN: $1"; }
 # ── U-Boot env override (NXP only) ────────────────────────────────
 uboot_override() {
     [ "$UBOOT_ENV_SUPPORT" != "true" ] && return
-    command -v fw_printenv &>/dev/null || return
+    command -v fw_printenv &>/dev/null || return 0
     log "Checking U-Boot env..."
     local _role _iface _channel _freq _reg_class
     _role=$(fw_printenv -n node_role 2>/dev/null || true)
@@ -71,12 +71,22 @@ reset_iface() {
 start_wpa() {
     local conf="$1"
     log "Starting wpa_supplicant ($conf)..."
-    wpa_supplicant -B \
-        -i "$P2P_IFACE" \
-        -c "$conf" \
-        -D nl80211 \
-        -f "$WPA_LOG" \
-        || die "wpa_supplicant failed. See $WPA_LOG"
+
+    # NXP (mlan*) build does not support -f log file option
+    if [[ "$P2P_IFACE" == mlan* ]]; then
+        wpa_supplicant -B \
+            -i "$P2P_IFACE" \
+            -c "$conf" \
+            -D nl80211 \
+            || die "wpa_supplicant failed to start — check: logread | grep wpa"
+    else
+        wpa_supplicant -B \
+            -i "$P2P_IFACE" \
+            -c "$conf" \
+            -D nl80211 \
+            -f "$WPA_LOG" \
+            || die "wpa_supplicant failed. See $WPA_LOG"
+    fi
 
     local timeout=10 elapsed=0
     until wpa_cli -i "$P2P_IFACE" ping &>/dev/null; do
@@ -85,7 +95,6 @@ start_wpa() {
     done
     ok "wpa_supplicant running."
 }
-
 # ── Assign static IP ──────────────────────────────────────────────
 assign_ip() {
     local ip="$1"
@@ -158,7 +167,7 @@ start_client() {
     reset_iface
     start_wpa "$WPA_CONF_DIR/p2p-client.conf"
 
-    wait_connected || { log "Connection failed — watchdog will retry."; exit 1; }
+    wait_connected || { log "Host not found — will retry via watchdog."; exit 0; }
 
     assign_ip "$CLIENT_IP"
 
