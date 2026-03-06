@@ -1,8 +1,8 @@
 [Unit]
 Description=P2P Wi-Fi Direct - Connection Watchdog
 After=p2p-init.service
-Requires=p2p-init.service
-BindsTo=p2p-init.service
+Wants=p2p-init.service
+PartOf=p2p-init.service
 
 [Service]
 Type=simple
