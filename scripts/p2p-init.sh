@@ -116,10 +116,24 @@ wait_connected() {
         local state
         state=$(wpa_cli -i "$P2P_IFACE" status 2>/dev/null \
             | grep "^wpa_state=" | cut -d= -f2 || echo "UNKNOWN")
+        
         [ "$state" = "COMPLETED" ] && { ok "Connected."; return 0; }
+        
+        # Fail-fast on obvious connection rejection
+        if [ "$state" = "INACTIVE" ] || [ "$state" = "DISCONNECTED" ]; then
+            # Re-trigger scanning if it gave up early
+            wpa_cli -i "$P2P_IFACE" reconnect > /dev/null 2>&1
+        fi
+
+        # Check for wrong password / auth failure
+        if wpa_cli -i "$P2P_IFACE" status 2>/dev/null | grep -q "reason=WRONG_KEY"; then
+            die "Authentication failed! Incorrect PSK."
+        fi
+
+        log "State: $state (waiting...)"
         sleep 1; elapsed=$((elapsed+1))
     done
-    log "Timeout: not connected."
+    log "Timeout: not connected. Final state: $state"
     return 1
 }
 
@@ -140,13 +154,18 @@ start_host() {
 
     start_wpa "$WPA_CONF_DIR/p2p-host.conf"
 
-    # Wait until AP is actually running (RUNNING flag appears)
+    # Wait until AP is actually running and wpa_supplicant is ready
     log "Waiting for AP to become active..."
     local timeout=10 elapsed=0
-    until ip link show "$P2P_IFACE" | grep -q "RUNNING"; do
+    until wpa_cli -i "$P2P_IFACE" status 2>/dev/null | grep -E -q "^wpa_state=(COMPLETED|SCANNING|INACTIVE)"; do
         sleep 1; elapsed=$((elapsed+1))
-        [ $elapsed -ge $timeout ] && { warn "AP RUNNING flag not set — continuing anyway."; break; }
+        [ $elapsed -ge $timeout ] && { warn "AP state verification timeout — continuing anyway."; break; }
     done
+
+    # Double check link state
+    if ! ip link show "$P2P_IFACE" | grep -q "RUNNING"; then
+        warn "AP RUNNING flag not set on interface, but wpa_supplicant is responding."
+    fi
 
     assign_ip "$HOST_IP"
 
