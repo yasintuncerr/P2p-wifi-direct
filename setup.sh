@@ -246,72 +246,147 @@ apply_conf() {
 }
 
 # ── Purge existing wpa_supplicant configs ─────────────────
-# Prevents the client from connecting to a previously configured
-# network (e.g. home Wi-Fi baked into the OS image).
+# Removes any pre-existing wpa configs that could pull the interface
+# to a home network or a stale AP config baked into the OS image.
 purge_wpa_configs() {
     header "Cleaning Existing wpa_supplicant Configs"
 
-    # Stop wpa_supplicant if running
-    if pgrep -x wpa_supplicant > /dev/null; then
-        log "Stopping wpa_supplicant..."
-        killall wpa_supplicant 2>/dev/null || true
-        sleep 1
-    fi
-
-    # Remove the system-wide default config (RPi, Ubuntu, Debian all use this)
+    # Remove the system-wide default config (RPi, Ubuntu, Debian)
     if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
         warn "Removing /etc/wpa_supplicant/wpa_supplicant.conf"
         rm -f /etc/wpa_supplicant/wpa_supplicant.conf
     fi
 
-    # Remove any per-interface configs (wpa_supplicant-wlan0.conf etc.)
+    # Remove per-interface configs (wpa_supplicant-wlan0.conf etc.)
     for f in /etc/wpa_supplicant/wpa_supplicant-*.conf; do
         [ -f "$f" ] || continue
         warn "Removing $f"
         rm -f "$f"
     done
 
-    # Disable wpa_supplicant system service and per-interface variants
-    for svc in wpa_supplicant.service "wpa_supplicant@${P2P_IFACE}.service"; do
-        if systemctl is-enabled "$svc" &>/dev/null; then
-            warn "Disabling $svc"
-            systemctl disable "$svc" 2>/dev/null || true
-            systemctl stop    "$svc" 2>/dev/null || true
+    # Clean up stale control sockets
+    rm -f /var/run/wpa_supplicant/* 2>/dev/null || true
+
+    log "wpa_supplicant configs wiped."
+}
+
+# ── Isolate WiFi interface from all network managers ───────
+# Each manager is handled according to its own persistence mechanism.
+# Ethernet interfaces are NOT touched — only $P2P_IFACE is isolated.
+# NOTE: We mask/disable the *systemd units* for wpa_supplicant so the
+# OS cannot auto-start it. Our p2p-init.sh starts wpa_supplicant
+# directly as a background process — completely unaffected by masking.
+isolate_wifi_managers() {
+    header "Isolating $P2P_IFACE from Network Managers"
+
+    # ── 1. wpa_supplicant — stop, disable AND mask ─────────────────
+    # 'disable' prevents auto-start on boot.
+    # 'mask' prevents systemd from restarting it even on failure.
+    # Our p2p-init.sh starts wpa_supplicant directly, not via these units.
+    for wpa_svc in wpa_supplicant.service "wpa_supplicant@${P2P_IFACE}.service"; do
+        if systemctl list-unit-files "$wpa_svc" 2>/dev/null | grep -q "$wpa_svc"; then
+            warn "Masking $wpa_svc..."
+            systemctl stop    "$wpa_svc" 2>/dev/null || true
+            systemctl disable "$wpa_svc" 2>/dev/null || true
+            systemctl mask    "$wpa_svc" 2>/dev/null || true
         fi
     done
 
-    # ── dhcpcd: stop it from touching the Wi-Fi interface ──
-    # On RPi, dhcpcd spawns its own wpa_supplicant and grabs wlan0
-    # before our service starts. We tell dhcpcd to see the interface
-    # but do absolutely nothing with it — no wpa_supplicant, no DHCP.
-    if [ -f /etc/dhcpcd.conf ]; then
-        if ! grep -q "^interface $P2P_IFACE" /etc/dhcpcd.conf; then
-            warn "Configuring dhcpcd to ignore $P2P_IFACE..."
-            cat >> /etc/dhcpcd.conf << DHCPEOF
+    # Kill any wpa_supplicant already holding the interface
+    if pgrep -x wpa_supplicant > /dev/null; then
+        warn "Killing stale wpa_supplicant process..."
+        killall wpa_supplicant 2>/dev/null || true
+        sleep 1
+    fi
 
-# p2p-wifi-direct: do not manage $P2P_IFACE
-interface $P2P_IFACE
+    # ── 2. NetworkManager ──────────────────────────────────────────
+    # 'nmcli managed no' is runtime-only and resets on reboot.
+    # A keyfile in conf.d is permanent and survives upgrades.
+    # The [keyfile] section only applies to the named interface.
+    if systemctl list-unit-files NetworkManager.service 2>/dev/null | grep -q NetworkManager; then
+        warn "Configuring NetworkManager to permanently unmanage $P2P_IFACE..."
+        mkdir -p /etc/NetworkManager/conf.d
+        cat > /etc/NetworkManager/conf.d/99-p2p-unmanaged.conf <<NMEOF
+# p2p-wifi-direct: do not manage the P2P interface
+[keyfile]
+unmanaged-devices=interface-name:${P2P_IFACE}
+NMEOF
+        # reload is enough — no need to restart, avoids dropping ethernet
+        systemctl reload NetworkManager.service 2>/dev/null || \
+        systemctl restart NetworkManager.service 2>/dev/null || true
+        log "NetworkManager: $P2P_IFACE permanently unmanaged (conf.d keyfile)"
+    fi
+
+    # ── 3. dhcpcd ─────────────────────────────────────────────────
+    # nohook: prevents dhcpcd from spawning its own wpa_supplicant.
+    # nodhcp: prevents IP assignment on the interface.
+    # Block is tagged so uninstall can cleanly remove it.
+    if [ -f /etc/dhcpcd.conf ]; then
+        if ! grep -q "^interface ${P2P_IFACE}" /etc/dhcpcd.conf; then
+            warn "Configuring dhcpcd to ignore $P2P_IFACE..."
+            cat >> /etc/dhcpcd.conf <<DHCPEOF
+
+# p2p-wifi-direct: do not manage ${P2P_IFACE}
+interface ${P2P_IFACE}
     nohook wpa_supplicant
     nodhcp
     noipv6
 DHCPEOF
-            log "dhcpcd configured for $P2P_IFACE"
+            log "dhcpcd: $P2P_IFACE blocked (nohook + nodhcp)"
         else
-            log "dhcpcd already configured for $P2P_IFACE"
+            log "dhcpcd: $P2P_IFACE already configured"
         fi
         systemctl restart dhcpcd.service 2>/dev/null || true
     fi
 
-    # NetworkManager: tell it to ignore the interface too
-    if command -v nmcli &>/dev/null; then
-        warn "NetworkManager detected — setting $P2P_IFACE unmanaged"
-        nmcli device set "$P2P_IFACE" managed no 2>/dev/null || true
+    # ── 4. connman (Yocto / NXP BSP) ──────────────────────────────
+    # Masking connman would also break ethernet on BSP images.
+    # Instead, use NetworkInterfaceBlacklist to only exclude the WiFi iface.
+    if systemctl list-unit-files connman.service 2>/dev/null | grep -q connman; then
+        warn "connman detected — blacklisting $P2P_IFACE..."
+        mkdir -p /etc/connman
+        local main_conf="/etc/connman/main.conf"
+        if [ -f "$main_conf" ]; then
+            if grep -q "^NetworkInterfaceBlacklist" "$main_conf"; then
+                # Append to existing blacklist if not already present
+                if ! grep -q "$P2P_IFACE" "$main_conf"; then
+                    sed -i "s/^NetworkInterfaceBlacklist=\(.*\)/NetworkInterfaceBlacklist=\1,${P2P_IFACE}/" "$main_conf"
+                fi
+            else
+                echo "NetworkInterfaceBlacklist=${P2P_IFACE}" >> "$main_conf"
+            fi
+        else
+            cat > "$main_conf" <<CONNEOF
+[General]
+NetworkInterfaceBlacklist=${P2P_IFACE}
+CONNEOF
+        fi
+        systemctl restart connman.service 2>/dev/null || true
+        log "connman: $P2P_IFACE blacklisted (ethernet intact)"
     fi
 
-    # Clean up stale control sockets
-    rm -f /var/run/wpa_supplicant/* 2>/dev/null || true
+    # ── 5. systemd-networkd ────────────────────────────────────────
+    # .network file with Unmanaged=yes tells networkd to ignore this iface.
+    # Other interfaces keep their own .network files — ethernet unaffected.
+    if systemctl list-unit-files systemd-networkd.service 2>/dev/null | grep -q systemd-networkd; then
+        warn "systemd-networkd detected — creating Unmanaged dropin for $P2P_IFACE..."
+        mkdir -p /etc/systemd/network
+        cat > "/etc/systemd/network/10-p2p-unmanaged.network" <<NETEOF
+# p2p-wifi-direct: do not manage ${P2P_IFACE}
+[Match]
+Name=${P2P_IFACE}
 
-    log "wpa_supplicant slate wiped clean."
+[Link]
+Unmanaged=yes
+NETEOF
+        systemctl restart systemd-networkd.service 2>/dev/null || true
+        log "systemd-networkd: $P2P_IFACE set to Unmanaged"
+    fi
+
+    # ── 6. Flush any IP left on the interface ──────────────────────
+    ip addr flush dev "$P2P_IFACE" 2>/dev/null || true
+
+    log "WiFi isolation complete."
 }
 
 # ── Install all files ──────────────────────────────────────
@@ -380,6 +455,12 @@ uninstall() {
     read -rp "Are you sure? (y/n): " ans
     [ "$ans" != "y" ] && { info "Cancelled."; exit 0; }
 
+    # Read interface name NOW — before env file is deleted below
+    local _iface
+    _iface=$(grep "^P2P_IFACE=" "$INSTALL_ENV_FILE" 2>/dev/null | cut -d'"' -f2 || echo "wlan0")
+    info "Restoring isolation for interface: $_iface"
+
+    # P2P services
     for svc in p2p-power p2p-watchdog p2p-init; do
         systemctl stop    "${svc}.service" 2>/dev/null || true
         systemctl disable "${svc}.service" 2>/dev/null || true
@@ -388,9 +469,9 @@ uninstall() {
     rm -f "$INSTALL_SYSTEMD_DIR/p2p-init.service"
     rm -f "$INSTALL_SYSTEMD_DIR/p2p-watchdog.service"
     rm -f "$INSTALL_SYSTEMD_DIR/p2p-power.service"
-    rm -f "$INSTALL_BIN_DIR/p2p-init.sh"
-    rm -f "$INSTALL_BIN_DIR/p2p-watchdog.sh"
-    rm -f "$INSTALL_BIN_DIR/p2p-power.sh"
+    rm -f "$INSTALL_BIN_DIR/p2p-init"
+    rm -f "$INSTALL_BIN_DIR/p2p-watchdog"
+    rm -f "$INSTALL_BIN_DIR/p2p-power"
     rm -f "$INSTALL_CONF_DIR/p2p-host.conf"
     rm -f "$INSTALL_CONF_DIR/p2p-client.conf"
     rm -f "$INSTALL_ENV_FILE"
@@ -398,11 +479,43 @@ uninstall() {
     rm -f "/run/p2p-power.cmd"
     rm -f "/var/log/wpa_supplicant.log"
 
-    # Restore dhcpcd.conf — remove the block we added
+    # ── Restore wpa_supplicant units (unmask) ──────────────
+    for wpa_svc in wpa_supplicant.service "wpa_supplicant@${_iface}.service"; do
+        systemctl unmask  "$wpa_svc" 2>/dev/null || true
+        systemctl enable  "$wpa_svc" 2>/dev/null || true
+    done
+    log "wpa_supplicant units unmasked."
+
+    # ── Restore NetworkManager ─────────────────────────────
+    if [ -f /etc/NetworkManager/conf.d/99-p2p-unmanaged.conf ]; then
+        rm -f /etc/NetworkManager/conf.d/99-p2p-unmanaged.conf
+        systemctl reload NetworkManager.service 2>/dev/null || \
+        systemctl restart NetworkManager.service 2>/dev/null || true
+        log "NetworkManager: unmanaged keyfile removed."
+    fi
+
+    # ── Restore dhcpcd.conf ────────────────────────────────
     if [ -f /etc/dhcpcd.conf ]; then
         sed -i "/# p2p-wifi-direct: do not manage/,/    noipv6/d" /etc/dhcpcd.conf
         systemctl restart dhcpcd.service 2>/dev/null || true
         log "dhcpcd.conf restored."
+    fi
+
+    # ── Restore connman ────────────────────────────────────
+    if [ -f /etc/connman/main.conf ]; then
+        local _iface_esc
+        _iface_esc=$(printf '%s' "$_iface" | sed 's/[.[\/^$*]/\\&/g')
+        sed -i "s/,${_iface_esc}//g; s/${_iface_esc},//g; s/${_iface_esc}//g" /etc/connman/main.conf
+        sed -i '/^NetworkInterfaceBlacklist=$/d' /etc/connman/main.conf
+        systemctl restart connman.service 2>/dev/null || true
+        log "connman: interface removed from blacklist."
+    fi
+
+    # ── Restore systemd-networkd ───────────────────────────
+    if [ -f /etc/systemd/network/10-p2p-unmanaged.network ]; then
+        rm -f /etc/systemd/network/10-p2p-unmanaged.network
+        systemctl restart systemd-networkd.service 2>/dev/null || true
+        log "systemd-networkd: unmanaged dropin removed."
     fi
 
     systemctl daemon-reload
@@ -475,6 +588,7 @@ main() {
     determine_frequency
     check_iface "$P2P_IFACE"
     purge_wpa_configs
+    isolate_wifi_managers
     install_files
     write_uboot_env
     print_summary
