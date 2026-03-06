@@ -418,10 +418,9 @@ install_files() {
     cp "$REPO_DIR/scripts/p2p-init.sh"     "$INSTALL_BIN_DIR/p2p-init"
     cp "$REPO_DIR/scripts/p2p-watchdog.sh" "$INSTALL_BIN_DIR/p2p-watchdog"
     cp "$REPO_DIR/scripts/p2p-power.sh"    "$INSTALL_BIN_DIR/p2p-power"
-    chmod +x "$INSTALL_BIN_DIR/p2p-init"
-    chmod +x "$INSTALL_BIN_DIR/p2p-watchdog"
-    chmod +x "$INSTALL_BIN_DIR/p2p-power"
-    log "Scripts: $INSTALL_BIN_DIR/p2p-{init,watchdog,power}"
+    cp "$REPO_DIR/scripts/p2p-status.sh"   "$INSTALL_BIN_DIR/p2p-status"
+    chmod +x "$INSTALL_BIN_DIR/p2p-"*
+    log "Scripts: $INSTALL_BIN_DIR/p2p-{init,watchdog,power,status}"
 
     # Systemd
     cp "$REPO_DIR/systemd/p2p-init.service"     "$INSTALL_SYSTEMD_DIR/"
@@ -472,12 +471,22 @@ uninstall() {
     rm -f "$INSTALL_BIN_DIR/p2p-init"
     rm -f "$INSTALL_BIN_DIR/p2p-watchdog"
     rm -f "$INSTALL_BIN_DIR/p2p-power"
+    rm -f "$INSTALL_BIN_DIR/p2p-status"
     rm -f "$INSTALL_CONF_DIR/p2p-host.conf"
     rm -f "$INSTALL_CONF_DIR/p2p-client.conf"
     rm -f "$INSTALL_ENV_FILE"
     rm -f "/run/p2p-connected"
     rm -f "/run/p2p-power.cmd"
+    
+    # ── Remove Logs & Extra Configs ────────────────────────
     rm -f "/var/log/wpa_supplicant.log"
+    rm -f "/etc/logrotate.d/p2p-wpa-supplicant"
+    
+    # ── Disable Hardware Watchdog ──────────────────────────
+    if [ -w /etc/systemd/system.conf ]; then
+        sed -i '/^RuntimeWatchdogSec/c\#RuntimeWatchdogSec=15s' /etc/systemd/system.conf
+        log "Hardware Watchdog reverted to disabled in system.conf"
+    fi
 
     # ── Restore wpa_supplicant units (unmask) ──────────────
     for wpa_svc in wpa_supplicant.service "wpa_supplicant@${_iface}.service"; do
