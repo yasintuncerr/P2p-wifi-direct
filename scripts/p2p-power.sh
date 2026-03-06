@@ -17,7 +17,7 @@
 source /etc/default/video-node
 
 TAG="p2p-power"
-CMD_PIPE="/run/p2p-power.cmd"
+CMD_FILE="/run/p2p-power.cmd"
 STATE_FILE="/run/p2p-connected"
 CURRENT_MODE=""
 OVERRIDE=""
@@ -32,30 +32,23 @@ CHECK_INTERVAL=5                # seconds between checks
 log() { logger -t "$TAG" "$1"; echo "[$(date '+%H:%M:%S')] [$TAG] $1"; }
 
 # ── Driver-aware power save toggle ────────────────────────
-# mlan* → Marvell 88W8997 (NXP) — requires mlanutl
-# wlan* → brcmfmac (RPi) or cfg80211 (Jetson) — iwconfig + iw
 set_power_save() {
     local state="$1"   # "on" or "off"
-    local mlanu_val
-    [ "$state" = "on" ] && mlanu_val=1 || mlanu_val=0
 
-    case "$P2P_IFACE" in
-        mlan*)
-            # Marvell 88W8997 (AzureWave) — mlanutl pscfg 0/1
-            # NOTE: validate on device with: mlanutl mlan0 pscfg
-            if command -v mlanutl &>/dev/null; then
-                mlanutl "$P2P_IFACE" pscfg "$mlanu_val" 2>/dev/null || true
-            else
-                warn "mlanutl not found — power save not applied for $P2P_IFACE"
-            fi
-            ;;
-        *)
-            # brcmfmac (RPi): needs iwconfig
-            iwconfig "$P2P_IFACE" power "$state" 2>/dev/null || true
-            # cfg80211 (Jetson, others): needs iw
-            iw dev "$P2P_IFACE" set power_save "$state" 2>/dev/null || true
-            ;;
-    esac
+    # Standard tools (works for most embedded Linux including RPi/Jetson, and NXP mlan0)
+    iwconfig "$P2P_IFACE" power "$state" 2>/dev/null || true
+    iw dev "$P2P_IFACE" set power_save "$state" 2>/dev/null || true
+    
+    # Verify the state actually applied
+    sleep 0.2
+    local actual_state
+    actual_state=$(iw dev "$P2P_IFACE" get power_save 2>/dev/null | grep -Eo "on|off" || echo "unknown")
+    
+    if [ "$actual_state" != "unknown" ] && [ "$actual_state" != "$state" ]; then
+        warn "Driver rejected power_save $state! (Current: $actual_state)"
+    # else
+    #    log "power_save successfully set to $state"
+    fi
 }
 
 # ── Performance mode: power save off, low-latency TX queue ─
@@ -80,18 +73,23 @@ get_tx_bytes() {
     cat "/sys/class/net/$P2P_IFACE/statistics/tx_bytes" 2>/dev/null || echo 0
 }
 
-# ── Create named pipe for override commands ────────────────
-setup_pipe() {
-    rm -f "$CMD_PIPE"
-    mkfifo "$CMD_PIPE"
-    chmod 666 "$CMD_PIPE"
-    log "Control pipe ready: $CMD_PIPE"
+# ── Create command file (no named pipe to avoid bash hangs) ──
+setup_cmd_file() {
+    rm -f "$CMD_FILE"
+    touch "$CMD_FILE"
+    chmod 666 "$CMD_FILE"
+    log "Control file ready: $CMD_FILE"
 }
 
 # ── Non-blocking command check ─────────────────────────────
 check_cmd() {
     local cmd
-    if read -r -t 0.1 cmd < "$CMD_PIPE" 2>/dev/null; then
+    # Read the first line if exists
+    if [ -s "$CMD_FILE" ]; then
+        read -r cmd < "$CMD_FILE" || true
+        # Clear the file immediately so we don't re-process
+        > "$CMD_FILE"
+
         case "$cmd" in
             force-performance)
                 log "Override: force-performance"
@@ -108,7 +106,7 @@ check_cmd() {
                 OVERRIDE=""
                 ;;
             *)
-                log "Unknown command: $cmd"
+                [ -n "$cmd" ] && log "Unknown command: $cmd"
                 ;;
         esac
     fi
@@ -116,7 +114,7 @@ check_cmd() {
 
 # ── Main loop ──────────────────────────────────────────────
 main_loop() {
-    local prev_tx=0 idle_ticks=0
+    local prev_tx=0 idle_ticks=0 first_tx_read=true
 
     log "Power manager started | iface=$P2P_IFACE | check=${CHECK_INTERVAL}s"
     log "Thresholds: start=${STREAM_START_THRESHOLD}B/s  stop=${STREAM_STOP_THRESHOLD}B/s  idle=${IDLE_COUNT_THRESHOLD} ticks"
@@ -128,9 +126,10 @@ main_loop() {
         check_cmd
 
         if [ ! -f "$STATE_FILE" ]; then
-            log "Waiting for connection..."
+            # Not connected yet. Reset state so we don't start with bad math when connected.
             prev_tx=0
             idle_ticks=0
+            first_tx_read=true
             continue
         fi
 
@@ -139,20 +138,37 @@ main_loop() {
 
         local cur_tx tx_rate
         cur_tx=$(get_tx_bytes)
+
+        # On the very first check after connection, just record the value.
+        # Otherwise tx_rate becomes (total_bytes_since_boot - 0) / 5 = huge spike!
+        if [ "$first_tx_read" = true ]; then
+            prev_tx=$cur_tx
+            first_tx_read=false
+            continue
+        fi
+
         tx_rate=$(( (cur_tx - prev_tx) / CHECK_INTERVAL ))
         prev_tx=$cur_tx
 
         if [ "$tx_rate" -ge "$STREAM_START_THRESHOLD" ]; then
             idle_ticks=0
             set_performance
-        else
+        elif [ "$tx_rate" -lt "$STREAM_STOP_THRESHOLD" ]; then
             if [ "$CURRENT_MODE" = "performance" ]; then
                 idle_ticks=$((idle_ticks + 1))
-                log "Idle tick $idle_ticks/$IDLE_COUNT_THRESHOLD (TX: ${tx_rate}B/s)"
+                log "Idle tick $idle_ticks/$IDLE_COUNT_THRESHOLD (TX: ${tx_rate}B/s < $STREAM_STOP_THRESHOLD)"
                 if [ "$idle_ticks" -ge "$IDLE_COUNT_THRESHOLD" ]; then
                     idle_ticks=0
                     set_efficient
                 fi
+            fi
+        else
+            # We are in the hysteresis zone (between STOP and START threshold)
+            # e.g. a stream is playing but currently buffering or low bitrate
+            # We maintain the current state and reset the idle counter just in case
+            if [ "$CURRENT_MODE" = "performance" ] && [ "$idle_ticks" -gt 0 ]; then
+                log "Stream recovered to ${tx_rate}B/s (resetting idle ticks)"
+                idle_ticks=0
             fi
         fi
     done
@@ -163,8 +179,8 @@ main_loop() {
 if [ -n "${1:-}" ]; then
     case "$1" in
         force-performance|force-efficient|auto)
-            if [ -p "$CMD_PIPE" ]; then
-                echo "$1" > "$CMD_PIPE"
+            if [ -f "$CMD_FILE" ]; then
+                echo "$1" > "$CMD_FILE"
                 echo "Command sent: $1"
             else
                 echo "Error: p2p-power service is not running."
@@ -183,5 +199,5 @@ if [ -n "${1:-}" ]; then
 fi
 
 # Running as service
-setup_pipe
+setup_cmd_file
 main_loop
