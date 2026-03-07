@@ -324,12 +324,12 @@ Usage: $0 {loop|watchdog|load} [options]
       systemctl restart/stop N kez, her seferinde IP kontrol eder.
 
   watchdog
-      wpa_supplicant öldürür, watchdog recovery'yi test eder.
+      Kills wpa_supplicant, tests watchdog recovery.
 
-  load --ip <addr> [--user <u>]
-      60s iperf3 + ping flood. SSH şifre sorar.
+  load --ip <addr> [--user <username>]
+      60s iperf3 + ping flood. SSH asks for password.
       Default user — rpi*:pi | jetson:jetson | nxp:root
-      Bu cihaz: ${DEVICE_TYPE:-unknown} → default: $(default_ssh_user)
+      This device: ${DEVICE_TYPE:-unknown} → default: $(default_ssh_user)
 EOF
         exit 0
         ;;
