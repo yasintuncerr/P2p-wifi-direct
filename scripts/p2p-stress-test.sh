@@ -175,7 +175,7 @@ run_load_test() {
         sleep 1
         
         log_info "Connecting to $target_ip (as $remote_user) via SSH to run ping flood & iperf3 client..."
-        ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "ping -f -s 1400 $local_ip > /tmp/ping_flood.log 2>&1 & iperf3 -c $local_ip -t 60 -i 10" | tee -a "$TEST_LOG"
+        ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "ping -f -s 1400 $local_ip > /tmp/ping_flood.log 2>&1 & iperf3 -c $local_ip -t 60 -i 10" | tee -a "$TEST_LOG"
         
         log_info "Stopping local iperf3 server..."
         killall iperf3 2>/dev/null || true
@@ -183,7 +183,7 @@ run_load_test() {
         log_info "Role: CLIENT -> Starting iperf3 server on remote IP ($target_ip, as $remote_user) via SSH, running client locally"
         
         # Start server on remote host
-        ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "iperf3 -s -D"
+        ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "iperf3 -s -D"
         sleep 1
 
         log_info "Starting local ping flood..."
@@ -195,7 +195,7 @@ run_load_test() {
         
         log_info "Cleaning up remote server..."
         kill "$PING_PID" 2>/dev/null || true
-        ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "killall iperf3 2>/dev/null || kill -9 \$(pidof iperf3) 2>/dev/null || true"
+        ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "killall iperf3 2>/dev/null || kill -9 \$(pidof iperf3) 2>/dev/null || true"
     fi
     
     log_info "Load Test Complete. Check iperf3 output above and /tmp/ping_flood.log for packet loss."
