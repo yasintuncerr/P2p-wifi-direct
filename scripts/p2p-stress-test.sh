@@ -7,7 +7,7 @@
 #
 # Examples:
 #   ./p2p-stress-test.sh loop --count 50     # Run connect/disconnect 50 times
-#   ./p2p-stress-test.sh watchdog            # Test watchdog recovery
+#   ./p2p-stress-test.sh watchdog            # Test watchdog recovery (auto detects peer)
 #   ./p2p-stress-test.sh load --ip <addr>    # Run iperf3 throughput & ping flood
 # ==============================================================================
 
@@ -90,6 +90,25 @@ run_watchdog_test() {
     fi
     sleep 2
 
+    # Determine target IP automatically from ARP/neighbor tables BEFORE killing wpa_supplicant
+    log_info "Auto-detecting connected peer on $INTERFACE..."
+    local target_ip=""
+    # Wait until there is a connected peer visible via ARP
+    local wait_count=0
+    while [ -z "$target_ip" ] && [ $wait_count -lt 15 ]; do
+        target_ip=$(ip neigh show dev "$INTERFACE" | awk '/REACHABLE|STALE|DELAY/ {print $1}' | head -n1)
+        if [ -z "$target_ip" ]; then
+            sleep 1
+            wait_count=$((wait_count + 1))
+        fi
+    done
+
+    if [ -z "$target_ip" ]; then
+        log_err "Could not automatically determine the connected peer's IP on $INTERFACE. Is anyone connected?"
+        return 1
+    fi
+    log_info "Target peer detected: $target_ip"
+
     # Forcibly kill wpa_supplicant
     local wpa_pid=$(pgrep wpa_supplicant)
     if [ -n "$wpa_pid" ]; then
@@ -99,13 +118,14 @@ run_watchdog_test() {
         log_err "wpa_supplicant is not running. Cannot test."
         return 1
     fi
-    
+
     # Wait and see if it comes back
-    log_info "Waiting up to 30 seconds for watchdog to recover connection..."
+    log_info "Waiting up to 90 seconds for watchdog to recover connection..."
     local recovered=0
-    for (( i=1; i<=30; i++ )); do
-        if pgrep -x "wpa_supplicant" > /dev/null && ip addr show $INTERFACE | grep -q 'inet '; then
-            log_info "Recovery successful! Connection restored in $i seconds."
+    for (( i=1; i<=90; i++ )); do
+        # Most reliable check: can we ping the target?
+        if ping -c 1 -W 1 -I "$INTERFACE" "$target_ip" > /dev/null 2>&1; then
+            log_info "Recovery successful! Connection restored and pinged $target_ip in $i seconds."
             recovered=1
             break
         fi
@@ -113,7 +133,7 @@ run_watchdog_test() {
     done
     
     if [ $recovered -eq 0 ]; then
-        log_err "Watchdog failed to recover the connection within the timeout."
+        log_err "Watchdog failed to ping $target_ip within the timeout."
     fi
     
     # Cleanup background watchdog if we started it
@@ -127,8 +147,9 @@ run_watchdog_test() {
 # ------------------------------------------------------------------------------
 run_load_test() {
     local target_ip=$1
+    local remote_user=$2
     if [ -z "$target_ip" ]; then
-        log_err "Target IP required for load test. Usage: ./p2p-stress-test.sh load --ip <addr>"
+        log_err "Target IP required for load test. Usage: ./p2p-stress-test.sh load --ip <addr> [--user <username>]"
         return 1
     fi
     
@@ -153,16 +174,16 @@ run_load_test() {
         iperf3 -s -D
         sleep 1
         
-        log_info "Connecting to $target_ip via SSH to run ping flood & iperf3 client..."
-        ssh -o BatchMode=yes -o ConnectTimeout=5 root@"$target_ip" "ping -f -s 1400 $local_ip > /tmp/ping_flood.log 2>&1 & iperf3 -c $local_ip -t 60 -i 10" | tee -a "$TEST_LOG"
+        log_info "Connecting to $target_ip (as $remote_user) via SSH to run ping flood & iperf3 client..."
+        ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "ping -f -s 1400 $local_ip > /tmp/ping_flood.log 2>&1 & iperf3 -c $local_ip -t 60 -i 10" | tee -a "$TEST_LOG"
         
         log_info "Stopping local iperf3 server..."
         killall iperf3 2>/dev/null || true
     else
-        log_info "Role: CLIENT -> Starting iperf3 server on remote IP ($target_ip) via SSH, running client locally"
+        log_info "Role: CLIENT -> Starting iperf3 server on remote IP ($target_ip, as $remote_user) via SSH, running client locally"
         
         # Start server on remote host
-        ssh -o BatchMode=yes -o ConnectTimeout=5 root@"$target_ip" "iperf3 -s -D"
+        ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "iperf3 -s -D"
         sleep 1
 
         log_info "Starting local ping flood..."
@@ -172,9 +193,9 @@ run_load_test() {
         log_info "Starting local iperf3 client..."
         iperf3 -c "$target_ip" -t 60 -i 10 | tee -a "$TEST_LOG"
         
-        log_info "Cleaning up..."
+        log_info "Cleaning up remote server..."
         kill "$PING_PID" 2>/dev/null || true
-        ssh -o BatchMode=yes -o ConnectTimeout=5 root@"$target_ip" "killall iperf3 2>/dev/null || kill -9 \$(pidof iperf3) 2>/dev/null || true"
+        ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "killall iperf3 2>/dev/null || kill -9 \$(pidof iperf3) 2>/dev/null || true"
     fi
     
     log_info "Load Test Complete. Check iperf3 output above and /tmp/ping_flood.log for packet loss."
@@ -204,25 +225,26 @@ case "$COMMAND" in
         done
         run_loop_test $COUNT
         ;;
-    watchdog)
         run_watchdog_test
         ;;
     load)
         TARGET_IP=""
+        REMOTE_USER="root"
         while [[ "$#" -gt 0 ]]; do
             case $1 in
                 --ip) TARGET_IP="$2"; shift ;;
+                --user) REMOTE_USER="$2"; shift ;;
                 *) echo "Unknown parameter: $1"; exit 1 ;;
             esac
             shift
         done
-        run_load_test "$TARGET_IP"
+        run_load_test "$TARGET_IP" "$REMOTE_USER"
         ;;
     *)
         echo "Usage: $0 {loop|watchdog|load} [options]"
-        echo "  loop --count N    : Run connection/disconnection up to N times"
-        echo "  watchdog          : Kill wpa_supplicant and test watchdog recovery"
-        echo "  load --ip <addr>  : Run iperf3 + ping flood against target device"
+        echo "  loop --count N        : Run connection/disconnection up to N times"
+        echo "  watchdog              : Kill wpa_supplicant and test watchdog recovery (auto detects peer)"
+        echo "  load --ip <addr> [--user <username>] : Run iperf3 + ping flood against target device via SSH"
         exit 1
         ;;
 esac
