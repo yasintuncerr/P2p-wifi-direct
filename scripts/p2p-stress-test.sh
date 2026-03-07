@@ -225,6 +225,7 @@ case "$COMMAND" in
         done
         run_loop_test $COUNT
         ;;
+    watchdog)
         run_watchdog_test
         ;;
     load)
