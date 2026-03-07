@@ -34,6 +34,8 @@ No P2P-GO, no virtual interfaces. Both sides connect directly over the physical 
 
 ## Setup
 
+`setup.sh` automatically installs components and **isolates** the target Wi-Fi interface from internal network managers (NetworkManager, connman, systemd-networkd, wpa_supplicant) to prevent conflicts. It also configures a system **Hardware Watchdog** and **wpa_supplicant Logrotate** for 24/7 autonomous durability.
+
 ### Interactive (Recommended)
 
 ```bash
@@ -77,7 +79,10 @@ journalctl -fu p2p-init.service
 journalctl -fu p2p-watchdog.service
 journalctl -fu p2p-power.service
 
-# Status
+# Health Dashboard (New!)
+p2p-status
+
+# Manual Status
 ls /run/p2p-connected        # file exists = connected
 wpa_cli -i wlan0 status
 ```
@@ -93,13 +98,11 @@ wpa_cli -i wlan0 status
 | > 100 KB/s        | **Performance** | power save OFF, `pfifo_fast` queue (low latency) |
 | < 10 KB/s for 30s | **Efficient**   | power save ON                                    |
 
+_Uses proper hysteresis (Schmitt trigger state tracking) to prevent flapping during minor stream drops._
+
 ### Driver-Aware Power Save
 
-| Device                       | Interface | Command                              |
-| ---------------------------- | --------- | ------------------------------------ |
-| NXP i.MX8M (Marvell 88W8997) | `mlan0`   | `mlanutl mlan0 pscfg 0/1`            |
-| RPi (brcmfmac)               | `wlan0`   | `iwconfig wlan0 power on/off`        |
-| Jetson (cfg80211)            | `wlan0`   | `iw dev wlan0 set power_save on/off` |
+The script universally utilizes standard `iwconfig` and `iw` utilities. It features **hardware verification**, meaning it automatically checks if the kernel Wi-Fi driver actually accepted the power state change and logs a warning if rejected.
 
 ### Optional Override
 
@@ -162,8 +165,9 @@ p2p-power    → start in EFFICIENT mode (power save ON)
 p2p-watchdog → ping other side every N seconds
     ↓
 Stream starts  → TX > 100 KB/s  → switch to PERFORMANCE
-Stream stops   → 30s idle       → switch back to EFFICIENT
-Link lost      → watchdog       → restart p2p-init
+Stream stops   → 30s idle (hysteresis) → switch back to EFFICIENT
+Ping drops     → watchdog soft recovery → wpa_cli reconnect
+Link lost      → watchdog hard recovery → restart p2p-init (non-blocking)
 ```
 
 ### IP Table
@@ -179,22 +183,20 @@ Link lost      → watchdog       → restart p2p-init
 
 Both host and client use `wpa_supplicant` — no `hostapd`, no virtual interfaces.
 
-| Parameter          | Value             | Description                      |
-| ------------------ | ----------------- | -------------------------------- |
-| `mode=2`           | Host              | AP mode                          |
-| `mode=0`           | Client            | STA mode                         |
-| `p2p_disabled=1`   | Both              | No P2P overhead                  |
-| `proto=RSN`        | Both              | WPA2                             |
-| `pairwise=CCMP`    | Both              | AES-CCMP encryption              |
-| `key_mgmt=WPA-PSK` | Both              | Pre-Shared Key                   |
-| `country=TR`       | Both              | Required for 5GHz channel access |
-| `frequency=5220`   | Host (Jetson/NXP) | Channel 44, Non-DFS, safe 5GHz   |
+| Parameter          | Value  | Description                       |
+| ------------------ | ------ | --------------------------------- |
+| `mode=2`           | Host   | AP mode                           |
+| `mode=0`           | Client | STA mode                          |
+| `p2p_disabled=1`   | Both   | No P2P overhead                   |
+| `proto=RSN`        | Both   | WPA2                              |
+| `pairwise=CCMP`    | Both   | AES-CCMP encryption               |
+| `key_mgmt=WPA-PSK` | Both   | Pre-Shared Key                    |
+| `country=TR`       | Both   | Required for 5GHz channel access  |
+| `frequency=0`      | Host   | ACS (Automatic Channel Selection) |
 
-### 5GHz Channel Selection
+### 5GHz Channel Selection (ACS)
 
-- **Non-DFS (safe) channels:** 36, 40, **44** ✅, 48
-- **DFS channels (52–140):** require radar detection — may delay AP startup
-- This project uses **Channel 44 (5220 MHz)** — optimal choice
+The Host/AP utilizes **ACS (Automatic Channel Selection)** with radar/DFS avoidance (`frequency=0`, `acs_num_scans=3`). It automatically scans the airwaves upon startup and selects the cleanest channel to prevent radar blockages and heavy interference. The client automatically tracks the SSID and connects properly regardless of the channel it lands on.
 
 ### Security: WPA2-PSK
 
@@ -218,9 +220,10 @@ p2p-wifi-direct/
 │   ├── p2p-host.conf
 │   └── p2p-client.conf
 ├── scripts/
-│   ├── p2p-init.sh        ← Establishes connection
-│   ├── p2p-watchdog.sh    ← Monitors connection
-│   └── p2p-power.sh       ← Power manager (closed box)
+│   ├── p2p-init.sh        ← Establishes connection (w/ fail-fast)
+│   ├── p2p-watchdog.sh    ← Connection health monitor
+│   ├── p2p-power.sh       ← Intelligent power manager
+│   └── p2p-status.sh      ← Interactive health dashboard
 ├── systemd/
 │   ├── p2p-init.service
 │   ├── p2p-watchdog.service
