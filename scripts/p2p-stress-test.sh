@@ -174,8 +174,9 @@ run_load_test() {
         iperf3 -s -D
         sleep 1
         
+        # Add sleep to stagger ping right after iperf connection starts
         log_info "Connecting to $target_ip (as $remote_user) via SSH to run ping flood & iperf3 client..."
-        ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "ping -f -s 1400 $local_ip > /tmp/ping_flood.log 2>&1 & iperf3 -c $local_ip -t 60 -i 10" | tee -a "$TEST_LOG"
+        ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "ping -f -s 1400 $local_ip 2>&1 | tee /tmp/ping_flood.log & iperf3 -c $local_ip -t 60 -i 10" | tee -a "$TEST_LOG"
         
         log_info "Stopping local iperf3 server..."
         killall iperf3 2>/dev/null || true
@@ -187,7 +188,7 @@ run_load_test() {
         sleep 1
 
         log_info "Starting local ping flood..."
-        ping -f -s 1400 "$target_ip" > /tmp/ping_flood.log 2>&1 &
+        ping -f -s 1400 "$target_ip" 2>&1 | tee /tmp/ping_flood.log &
         PING_PID=$!
         
         log_info "Starting local iperf3 client..."
