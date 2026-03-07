@@ -60,7 +60,18 @@ log_err()  { echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $*" | tee -a "$TEST_LOG"
 log_warn() { echo "$(date '+%Y-%m-%d %H:%M:%S') [WARN]  $*" | tee -a "$TEST_LOG"; }
 log_ok()   { echo "$(date '+%Y-%m-%d %H:%M:%S') [OK]    $*" | tee -a "$TEST_LOG"; }
 
-# ── Helper: check if service is active ───────────────────────────────────────
+# ── Helper: default SSH user per device type ─────────────────────────────────
+# Can be overridden with --user on any command.
+default_ssh_user() {
+    case "${DEVICE_TYPE:-}" in
+        rpi|rpi3bp|rpi4|rpi5) echo "pi"     ;;
+        jetson)                echo "jetson" ;;
+        nxp)                   echo "root"   ;;
+        *)                     echo "root"   ;;  # safe fallback
+    esac
+}
+
+
 service_active() {
     systemctl is-active --quiet "${1}.service" 2>/dev/null
 }
@@ -88,17 +99,56 @@ iface_has_ip() {
     ip addr show "$INTERFACE" 2>/dev/null | grep -q 'inet '
 }
 
-# ── Helper: run SSH command with standard options ─────────────────────────────
+# ── Helper: run SSH command ────────────────────────────────────────────────────
+# Uses key auth by default (BatchMode=yes).
+# If REMOTE_PASSWORD is set, falls back to sshpass for password auth.
+SSH_PASSWORD=""   # Set via --password argument
+
 ssh_run() {
     local target_user="$1"
     local target_ip="$2"
     shift 2
-    ssh \
-        -o ConnectTimeout=5 \
-        -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null \
-        -o BatchMode=yes \
-        "${target_user}@${target_ip}" "$@"
+    local ssh_opts=(
+        -o ConnectTimeout=10
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        -o LogLevel=ERROR
+    )
+
+    if [ -n "$SSH_PASSWORD" ]; then
+        # Password mode: requires sshpass
+        if ! command -v sshpass &>/dev/null; then
+            log_err "sshpass not found. Install it: apt-get install sshpass"
+            return 1
+        fi
+        SSHPASS="$SSH_PASSWORD" sshpass -e ssh "${ssh_opts[@]}" "${target_user}@${target_ip}" "$@"
+    else
+        # Key mode: BatchMode=yes (fails fast if no key)
+        ssh "${ssh_opts[@]}" -o BatchMode=yes "${target_user}@${target_ip}" "$@"
+    fi
+}
+
+# ── Helper: verify SSH and give actionable error ───────────────────────────────
+verify_ssh() {
+    local target_user="$1"
+    local target_ip="$2"
+    log_info "Verifying SSH to ${target_user}@${target_ip}..."
+
+    if ssh_run "$target_user" "$target_ip" "echo ok" &>/dev/null; then
+        log_ok "SSH OK."
+        return 0
+    fi
+
+    # Give a helpful error depending on auth mode
+    log_err "SSH to ${target_user}@${target_ip} failed."
+    if [ -z "$SSH_PASSWORD" ]; then
+        log_err "No SSH key found. Options:"
+        log_err "  1) Copy your key:  ssh-copy-id ${target_user}@${target_ip}"
+        log_err "  2) Use password:   add --password <yourpassword> to the command"
+    else
+        log_err "Password authentication failed. Check --password value."
+    fi
+    return 1
 }
 
 # ── Helper: start iperf3 server (no -D flag, background process instead) ─────
@@ -296,12 +346,7 @@ run_load_test() {
     fi
 
     # Verify SSH access first — fail fast before starting anything
-    log_info "Verifying SSH to ${remote_user}@${target_ip}..."
-    if ! ssh_run "$remote_user" "$target_ip" "echo ok" &>/dev/null; then
-        log_err "SSH to ${remote_user}@${target_ip} failed. Check keys/credentials."
-        return 1
-    fi
-    log_ok "SSH OK."
+    verify_ssh "$remote_user" "$target_ip" || return 1
 
     # Verify remote has iperf3
     if ! ssh_run "$remote_user" "$target_ip" "command -v iperf3" &>/dev/null; then
@@ -387,6 +432,91 @@ run_load_test() {
 }
 
 # ==============================================================================
+# SSH Key Setup
+# ==============================================================================
+setup_ssh_key() {
+    local target_ip="$1"
+    local remote_user="$2"
+    local password="$3"
+
+    # sudo ile çalışıyoruz — key'i asıl kullanıcının home'una koy
+    local real_user="${SUDO_USER:-$USER}"
+    local real_home
+    real_home=$(getent passwd "$real_user" | cut -d: -f6)
+    local key_path="${real_home}/.ssh/id_ed25519"
+    local pub_path="${key_path}.pub"
+
+    log_info "Setting up SSH key for ${remote_user}@${target_ip}"
+    log_info "Key owner: $real_user | Key path: $key_path"
+
+    # 1. Generate key if missing
+    if [ ! -f "$key_path" ]; then
+        log_info "No key found at $key_path — generating ed25519 key..."
+        mkdir -p "${real_home}/.ssh"
+        chmod 700 "${real_home}/.ssh"
+        # Run as actual user, not root, so ownership is correct
+        sudo -u "$real_user" ssh-keygen -t ed25519 -N "" -f "$key_path" -C "${real_user}@p2p-stress-test" || {
+            log_err "ssh-keygen failed."
+            return 1
+        }
+        log_ok "Key generated: $key_path"
+    else
+        log_info "Key already exists: $key_path"
+    fi
+
+    # 2. Check if key is already installed on remote
+    log_info "Checking if key is already authorized on ${target_ip}..."
+    if SSH_PASSWORD="" ssh \
+        -o ConnectTimeout=5 \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o BatchMode=yes \
+        -i "$key_path" \
+        "${remote_user}@${target_ip}" "echo ok" &>/dev/null; then
+        log_ok "Key already works — no action needed."
+        return 0
+    fi
+
+    # 3. Copy key using ssh-copy-id (password required)
+    if [ -z "$password" ]; then
+        log_err "Key not yet on remote, and no --password provided to copy it."
+        log_err "Run: $0 setup-ssh --ip $target_ip --user $remote_user --password <pass>"
+        return 1
+    fi
+
+    if ! command -v sshpass &>/dev/null; then
+        log_err "sshpass not installed. Run: apt-get install sshpass"
+        return 1
+    fi
+
+    log_info "Copying public key to ${remote_user}@${target_ip}..."
+    SSHPASS="$password" sshpass -e ssh-copy-id \
+        -i "$pub_path" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        "${remote_user}@${target_ip}" || {
+        log_err "ssh-copy-id failed. Wrong password?"
+        return 1
+    }
+
+    # 4. Verify key auth works now
+    log_info "Verifying key auth..."
+    if SSH_PASSWORD="" ssh \
+        -o ConnectTimeout=5 \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o BatchMode=yes \
+        -i "$key_path" \
+        "${remote_user}@${target_ip}" "echo ok" &>/dev/null; then
+        log_ok "SSH key auth is working for ${remote_user}@${target_ip}."
+        log_ok "You can now run: sudo $0 load --ip $target_ip --user $remote_user"
+    else
+        log_err "Key was copied but auth still failing. Check sshd config on remote."
+        return 1
+    fi
+}
+
+# ==============================================================================
 # Main
 # ==============================================================================
 if [ "$EUID" -ne 0 ]; then
@@ -417,13 +547,30 @@ case "$COMMAND" in
         run_watchdog_test
         ;;
 
-    load)
+    setup-ssh)
         TARGET_IP=""
-        REMOTE_USER="root"
+        REMOTE_USER="$(default_ssh_user)"
+        SSH_PASSWORD=""
         while [ "$#" -gt 0 ]; do
             case "$1" in
-                --ip)   TARGET_IP="$2";   shift 2 ;;
-                --user) REMOTE_USER="$2"; shift 2 ;;
+                --ip)       TARGET_IP="$2";    shift 2 ;;
+                --user)     REMOTE_USER="$2";  shift 2 ;;
+                --password) SSH_PASSWORD="$2"; shift 2 ;;
+                *) echo "Unknown parameter: $1" >&2; exit 1 ;;
+            esac
+        done
+        [ -z "$TARGET_IP" ] && { echo "ERROR: --ip required." >&2; exit 1; }
+        setup_ssh_key "$TARGET_IP" "$REMOTE_USER" "$SSH_PASSWORD"
+        ;;
+
+    load)
+        TARGET_IP=""
+        REMOTE_USER="$(default_ssh_user)"
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                --ip)       TARGET_IP="$2";    shift 2 ;;
+                --user)     REMOTE_USER="$2";  shift 2 ;;
+                --password) SSH_PASSWORD="$2"; shift 2 ;;
                 *) echo "Unknown parameter: $1" >&2; exit 1 ;;
             esac
         done
@@ -431,7 +578,13 @@ case "$COMMAND" in
         ;;
 
     ""|--help|-h)
-        echo "Usage: $0 {loop|watchdog|load} [options]"
+        echo "Usage: $0 {setup-ssh|loop|watchdog|load} [options]"
+        echo ""
+        echo "  setup-ssh --ip <addr> --password <pass> [--user <username>]"
+        echo "      Generate SSH key (if needed) and copy it to the remote device."
+        echo "      Run this once before 'load'. No password needed after."
+        echo "      Default user is inferred from DEVICE_TYPE in /etc/default/video-node:"
+        echo "        rpi/rpi3bp/rpi4/rpi5 → pi   |   jetson → jetson   |   nxp → root"
         echo ""
         echo "  loop --count N"
         echo "      Connect/disconnect N times via systemctl, verify IP each round."
@@ -440,7 +593,10 @@ case "$COMMAND" in
         echo "      Kill wpa_supplicant, verify watchdog restores connectivity."
         echo ""
         echo "  load --ip <addr> [--user <username>]"
-        echo "      iperf3 throughput test + ping flood. SSH to peer required."
+        echo "      iperf3 throughput test + ping flood over the P2P link."
+        echo "      Default user same as setup-ssh (device-aware)."
+        echo ""
+        echo "  Current device: ${DEVICE_TYPE:-unknown} → default user: $(default_ssh_user)"
         echo ""
         exit 0
         ;;
