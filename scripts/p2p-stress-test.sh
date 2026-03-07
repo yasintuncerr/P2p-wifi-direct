@@ -490,12 +490,22 @@ setup_ssh_key() {
     fi
 
     log_info "Copying public key to ${remote_user}@${target_ip}..."
-    SSHPASS="$password" sshpass -e ssh-copy-id \
-        -i "$pub_path" \
+    local pubkey
+    pubkey=$(cat "$pub_path")
+    SSHPASS="$password" sshpass -e ssh \
         -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
-        "${remote_user}@${target_ip}" || {
-        log_err "ssh-copy-id failed. Wrong password?"
+        -o PreferredAuthentications=password \
+        -o PubkeyAuthentication=no \
+        "${remote_user}@${target_ip}" \
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && \
+         grep -qxF '${pubkey}' ~/.ssh/authorized_keys 2>/dev/null || \
+         echo '${pubkey}' >> ~/.ssh/authorized_keys && \
+         chmod 600 ~/.ssh/authorized_keys" || {
+        log_err "Failed to copy key. Possible causes:"
+        log_err "  - Wrong password"
+        log_err "  - PasswordAuthentication disabled in sshd_config on remote"
+        log_err "  - Wrong --user (current: $remote_user)"
         return 1
     }
 
