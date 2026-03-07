@@ -167,6 +167,11 @@ run_load_test() {
 
     log_info "Starting Load Test against $target_ip for 60 seconds. Interface: $INTERFACE (IP: $local_ip)"
 
+    # Start ping flood locally where we already have root access for `-f` flag
+    log_info "Starting local ping flood in the background (saving to /tmp/ping_flood.log)..."
+    ping -f -s 1400 "$target_ip" > /tmp/ping_flood.log 2>&1 &
+    PING_PID=$!
+
     if [ "$NODE_ROLE" = "host" ]; then
         log_info "Role: HOST -> Starting local iperf3 server, triggering client on remote IP ($target_ip) via SSH"
         
@@ -174,9 +179,8 @@ run_load_test() {
         iperf3 -s -D
         sleep 1
         
-        # Add sleep to stagger ping right after iperf connection starts
-        log_info "Connecting to $target_ip (as $remote_user) via SSH to run ping flood & iperf3 client..."
-        ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "ping -f -s 1400 $local_ip 2>&1 | tee /tmp/ping_flood.log & iperf3 -c $local_ip -t 60 -i 10" | tee -a "$TEST_LOG"
+        log_info "Connecting to $target_ip (as $remote_user) via SSH to run iperf3 client..."
+        ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "iperf3 -c $local_ip -t 60 -i 10" | tee -a "$TEST_LOG"
         
         log_info "Stopping local iperf3 server..."
         killall iperf3 2>/dev/null || true
@@ -187,19 +191,19 @@ run_load_test() {
         ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "iperf3 -s -D"
         sleep 1
 
-        log_info "Starting local ping flood..."
-        ping -f -s 1400 "$target_ip" 2>&1 | tee /tmp/ping_flood.log &
-        PING_PID=$!
-        
         log_info "Starting local iperf3 client..."
         iperf3 -c "$target_ip" -t 60 -i 10 | tee -a "$TEST_LOG"
         
         log_info "Cleaning up remote server..."
-        kill "$PING_PID" 2>/dev/null || true
         ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$remote_user@$target_ip" "killall iperf3 2>/dev/null || kill -9 \$(pidof iperf3) 2>/dev/null || true"
     fi
     
-    log_info "Load Test Complete. Check iperf3 output above and /tmp/ping_flood.log for packet loss."
+    # Kill the ping background job
+    kill "$PING_PID" 2>/dev/null || true
+    
+    log_info "Load Test Complete. Check iperf3 output above."
+    log_info "--- Ping Flood Results ---"
+    tail -n 5 /tmp/ping_flood.log
 }
 
 # ==============================================================================
